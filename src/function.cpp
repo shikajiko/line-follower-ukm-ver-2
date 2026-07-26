@@ -1,0 +1,2188 @@
+#include "function.h"
+#include "IO.h"
+#include <Arduino.h>
+#include <Preferences.h>
+#include <WebServer.h>
+#include <WiFi.h>
+#include <driver/pcnt.h>
+#include <stdio.h>
+#include <string.h>
+
+#ifndef WIFI_SSID
+#define WIFI_SSID "Robotika@test"
+#endif
+
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "12345678"
+#endif
+
+// ============ OLED DISPLAY OBJECT ============
+// Adafruit_SSD1306 display(width, height, &Wire, reset_pin);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// ============ GLOBAL VARIABLES ============
+
+// GY25 UART communication
+int16_t gy25_yaw = 0;   // x100 degrees
+int16_t gy25_pitch = 0; // x100 degrees
+int16_t gy25_roll = 0;  // x100 degrees
+uint32_t gy25_last_read = 0;
+bool gy25_timeout = false;
+
+// PID Controller for line following
+PIDController pid_line_following;
+bool pid_enabled = false;
+float pid_line_position = 0.0f;
+bool line_detected = false;
+static bool pid_settings_loaded = false;
+static bool pid_menu_active = false;
+static uint8_t pid_menu_item = 0;
+static uint32_t pid_last_update_ms = 0;
+static Preferences pid_preferences;
+
+// PID parameters (adjustable during runtime)
+float pid_current_Kp = 0.8f;
+float pid_current_Ki = 0.001f;
+float pid_current_Kd = 0.2f;
+float pid_integral_limit = 100.0f;
+float pid_output_limit = 120.0f;
+float pid_base_speed = 140.0f;
+
+// Line position calculation
+uint32_t line_position_last_update = 0;
+uint16_t line_min_threshold = 100;  // Minimum ADC value to consider as line
+uint16_t line_max_threshold = 4000; // Maximum ADC value
+float line_position_range =
+    1000.0f; // Output range for position (-range to +range)
+
+// Encoder PCNT counters
+int32_t enc1_count = 0;
+int32_t enc2_count = 0;
+int32_t enc1_last_count = 0;
+int32_t enc2_last_count = 0;
+
+// Button state tracking
+int button1_last = BUTTON_RELEASED;
+int button2_last = BUTTON_RELEASED;
+int button3_last = BUTTON_RELEASED;
+int button4_last = BUTTON_RELEASED;
+uint32_t button_debounce_time = 50;
+uint32_t button1_press_time = 0;
+uint32_t button2_press_time = 0;
+uint32_t button3_press_time = 0;
+uint32_t button4_press_time = 0;
+bool button1_pressed = false;
+bool button2_pressed = false;
+bool button3_pressed = false;
+bool button4_pressed = false;
+uint32_t button3_hold_start = 0;
+bool button3_poweroff_latched = false;
+
+// Servo position
+uint16_t servo1_pulse = 1500;
+uint16_t servo2_pulse = 1500;
+
+// Motor state
+int16_t motor1_speed = 0;
+int16_t motor2_speed = 0;
+
+// Motor PWM (LEDC)
+#define MOTOR_PWM_FREQ 20000
+#define MOTOR_PWM_RES_BITS 8
+#define MOTOR1_IN1_CH 2
+#define MOTOR1_IN2_CH 3
+#define MOTOR2_IN3_CH 4
+#define MOTOR2_IN4_CH 5
+
+// Some drivers need a short time enabled while direction inputs change.
+#define MOTOR_ENABLE_HOLD_MS 300u
+
+// Line sensor
+#define LINE_SENSOR_THRESHOLD 3600
+uint16_t line_sensor_raw[16];
+uint8_t line_sensor_digital[16];
+
+// Line sensor calibration arrays
+uint16_t line_sensor_max[16];
+uint16_t line_sensor_min[16];
+uint16_t line_sensor_threshold[16];
+bool is_calibrating = false;
+
+// VBAT sense calibration
+// VBAT_SCALE = VBAT(mV) / SENSE(mV). Include divider ratio + any trim.
+#ifndef VBAT_SCALE
+#define VBAT_SCALE 6.4f
+#endif
+
+// Test state machine
+#define TEST_STATE_IDLE 0
+#define TEST_STATE_GY25 1
+#define TEST_STATE_BUTTON 2
+#define TEST_STATE_BUZZER 3
+#define TEST_STATE_ENC1 4
+#define TEST_STATE_ENC2 5
+#define TEST_STATE_SERVO1 6
+#define TEST_STATE_SERVO2 7
+#define TEST_STATE_MOTOR1 8
+#define TEST_STATE_MOTOR2 9
+#define TEST_STATE_LED_POWER 10
+#define TEST_STATE_VBATT 11
+#define TEST_STATE_LINE_SENSOR 12
+#define TEST_STATE_PID_LINE 13
+#define TEST_STATE_WEB_GAMEPAD 14
+#define TEST_STATE_DONE 15
+
+uint8_t current_test_state = TEST_STATE_IDLE;
+uint32_t test_state_timer = 0;
+uint8_t test_running = 0;
+uint8_t test_phase = 0;
+
+// Single-sensor check mode (cek sensor satu-per-satu, mirip program basic)
+bool single_sensor_active = false;
+uint8_t single_sensor_channel = 0;
+bool led_power_last_out = false;
+uint32_t led_power_last_debug_ms = 0;
+bool line_sensor_entry_armed = false;
+
+static WebServer webGamepadServer(80);
+static bool webGamepadServerStarted = false;
+static bool webGamepadWifiConfigured = false;
+static bool webGamepadWifiConnected = false;
+static uint32_t webGamepadLastRetryMs = 0;
+static char webGamepadIpText[24] = "--";
+static char webGamepadWifiText[24] = "idle";
+static char webGamepadCommandText[32] = "stop";
+static uint8_t webGamepadSpeed = 160;
+
+static bool webGamepadCredentialsReady() {
+  return strcmp(WIFI_SSID, "YOUR_WIFI_SSID") != 0 &&
+         strcmp(WIFI_PASSWORD, "YOUR_WIFI_PASSWORD") != 0;
+}
+
+static void webGamepadStopMotors() {
+  setMotor(1, 0);
+  setMotor(2, 0);
+  snprintf(webGamepadCommandText, sizeof(webGamepadCommandText), "stop");
+}
+
+static void webGamepadSetDrive(const char *direction, uint8_t speed) {
+  int16_t left = 0;
+  int16_t right = 0;
+
+  if (strcmp(direction, "fwd") == 0) {
+    left = speed;
+    right = speed;
+  } else if (strcmp(direction, "back") == 0) {
+    left = -static_cast<int16_t>(speed);
+    right = -static_cast<int16_t>(speed);
+  } else if (strcmp(direction, "left") == 0) {
+    left = -static_cast<int16_t>(speed);
+    right = speed;
+  } else if (strcmp(direction, "right") == 0) {
+    left = speed;
+    right = -static_cast<int16_t>(speed);
+  }
+
+  setMotor(1, left);
+  setMotor(2, right);
+
+  if (left == 0 && right == 0) {
+    snprintf(webGamepadCommandText, sizeof(webGamepadCommandText), "stop");
+  } else {
+    snprintf(webGamepadCommandText, sizeof(webGamepadCommandText), "%s %u",
+             direction, speed);
+  }
+
+  Serial.printf("[WEB] %s L:%d R:%d SPEED:%u\n", direction, left, right, speed);
+}
+
+static void webGamepadServeRoot() {
+  static const char page[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Robot Gamepad</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111f;
+      --panel: rgba(12, 22, 39, 0.92);
+      --border: rgba(77, 225, 161, 0.22);
+      --text: #edf5ff;
+      --muted: #9fb0c6;
+      --accent: #4de1a1;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(77, 225, 161, 0.15), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(255, 204, 102, 0.12), transparent 25%),
+        linear-gradient(180deg, #08101c 0%, #050910 100%);
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p { margin: 6px 0; color: var(--muted); }
+    .status {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin: 16px 0;
+    }
+    .pill {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.04);
+      font-size: 14px;
+    }
+    .speed { display: grid; gap: 8px; margin: 10px 0 18px; }
+    input[type="range"] { width: 100%; }
+    .pad {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(72px, 1fr));
+      gap: 12px;
+      max-width: 380px;
+      margin: 14px auto;
+    }
+    button {
+      border: 0;
+      border-radius: 18px;
+      min-height: 64px;
+      font-weight: 700;
+      font-size: 16px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    }
+    button.primary {
+      background: linear-gradient(180deg, rgba(77, 225, 161, 0.28), rgba(77, 225, 161, 0.12));
+      box-shadow: inset 0 0 0 1px rgba(77, 225, 161, 0.35);
+    }
+    button.danger {
+      background: linear-gradient(180deg, rgba(255, 107, 107, 0.32), rgba(255, 107, 107, 0.14));
+      box-shadow: inset 0 0 0 1px rgba(255, 107, 107, 0.35);
+    }
+    .footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: space-between;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>ESP32 Robot Gamepad</h1>
+    <p>Open this page from the IP shown on the LCD, then drive the robot with the buttons below.</p>
+    <div class="status">
+      <div class="pill" id="wifi">WiFi: --</div>
+      <div class="pill" id="ip">IP: --</div>
+      <div class="pill" id="cmd">CMD: stop</div>
+    </div>
+    <div class="speed">
+      <label for="speed">Speed: <span id="speedLabel">160</span></label>
+      <input id="speed" type="range" min="0" max="255" value="160">
+    </div>
+    <div class="pad">
+      <div></div>
+      <button class="primary hold" data-dir="fwd">Forward</button>
+      <div></div>
+      <button class="primary hold" data-dir="left">Left</button>
+      <button class="danger" data-stop="true">STOP</button>
+      <button class="primary hold" data-dir="right">Right</button>
+      <div></div>
+      <button class="primary hold" data-dir="back">Back</button>
+      <div></div>
+    </div>
+    <div class="actions">
+      <button class="danger" onclick="finishTest()">Finish Test</button>
+      <button onclick="refreshStatus()">Refresh Status</button>
+    </div>
+    <div class="footer">
+      <div>BTN1 on the robot advances to DONE.</div>
+      <div>BTN2 returns to the previous test.</div>
+    </div>
+  </main>
+  <script>
+    const wifiEl = document.getElementById('wifi');
+    const ipEl = document.getElementById('ip');
+    const cmdEl = document.getElementById('cmd');
+    const speedEl = document.getElementById('speed');
+    const speedLabelEl = document.getElementById('speedLabel');
+
+    speedEl.addEventListener('input', () => {
+      speedLabelEl.textContent = speedEl.value;
+    });
+
+    async function sendCmd(dir) {
+      await fetch(`/cmd?dir=${encodeURIComponent(dir)}&speed=${encodeURIComponent(speedEl.value)}`, { cache: 'no-store' });
+      await refreshStatus();
+    }
+
+    async function stopCmd() {
+      await fetch('/cmd?dir=stop&speed=0', { cache: 'no-store' });
+      await refreshStatus();
+    }
+
+    async function finishTest() {
+      await fetch('/finish', { cache: 'no-store' });
+      await refreshStatus();
+    }
+
+    async function refreshStatus() {
+      try {
+        const response = await fetch('/status', { cache: 'no-store' });
+        const state = await response.json();
+        wifiEl.textContent = `WiFi: ${state.wifi}`;
+        ipEl.textContent = `IP: ${state.ip}`;
+        cmdEl.textContent = `CMD: ${state.cmd}`;
+        if (state.speed !== undefined) {
+          speedEl.value = state.speed;
+          speedLabelEl.textContent = state.speed;
+        }
+      } catch (error) {
+        wifiEl.textContent = 'WiFi: offline';
+      }
+    }
+
+    function wireMomentaryButtons() {
+      document.querySelectorAll('button[data-dir]').forEach((button) => {
+        const dir = button.dataset.dir;
+        const start = async (event) => {
+          event.preventDefault();
+          await sendCmd(dir);
+        };
+        const stop = async (event) => {
+          event.preventDefault();
+          await stopCmd();
+        };
+
+        button.addEventListener('pointerdown', start);
+        button.addEventListener('pointerup', stop);
+        button.addEventListener('pointercancel', stop);
+        button.addEventListener('pointerleave', stop);
+        button.addEventListener('lostpointercapture', stop);
+      });
+
+      const stopButton = document.querySelector('button[data-stop="true"]');
+      if (stopButton) {
+        stopButton.addEventListener('click', async (event) => {
+          event.preventDefault();
+          await stopCmd();
+        });
+      }
+    }
+
+    refreshStatus();
+    wireMomentaryButtons();
+    setInterval(refreshStatus, 1000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+  webGamepadServer.sendHeader("Cache-Control", "no-store");
+  webGamepadServer.send_P(200, "text/html", page);
+}
+
+static void webGamepadServeStatus() {
+  String payload = "{";
+  payload += "\"wifi\":\"";
+  payload += webGamepadWifiText;
+  payload += "\",";
+  payload += "\"ip\":\"";
+  payload += webGamepadIpText;
+  payload += "\",";
+  payload += "\"cmd\":\"";
+  payload += webGamepadCommandText;
+  payload += "\",";
+  payload += "\"speed\":";
+  payload += webGamepadSpeed;
+  payload += "}";
+
+  webGamepadServer.sendHeader("Cache-Control", "no-store");
+  webGamepadServer.send(200, "application/json", payload);
+}
+
+static void webGamepadServeCommand() {
+  const String dir = webGamepadServer.arg("dir");
+  const int speedValue = webGamepadServer.arg("speed").toInt();
+  const uint8_t speed = static_cast<uint8_t>(constrain(speedValue, 0, 255));
+
+  if (dir == "stop" || dir.length() == 0) {
+    webGamepadStopMotors();
+  } else {
+    webGamepadSpeed = speed;
+    webGamepadSetDrive(dir.c_str(), speed);
+  }
+
+  webGamepadServer.sendHeader("Cache-Control", "no-store");
+  webGamepadServer.send(200, "text/plain", "OK");
+}
+
+static void webGamepadFinishTest() {
+  webGamepadStopMotors();
+  test_running = 1;
+  current_test_state = TEST_STATE_DONE;
+  test_state_timer = millis();
+  test_phase = 0;
+  snprintf(webGamepadWifiText, sizeof(webGamepadWifiText), "done");
+  webGamepadServer.sendHeader("Cache-Control", "no-store");
+  webGamepadServer.send(200, "text/plain", "DONE");
+}
+
+static void webGamepadEnsureServerStarted() {
+  if (webGamepadServerStarted) {
+    return;
+  }
+
+  webGamepadServer.on("/", HTTP_GET, webGamepadServeRoot);
+  webGamepadServer.on("/status", HTTP_GET, webGamepadServeStatus);
+  webGamepadServer.on("/cmd", HTTP_GET, webGamepadServeCommand);
+  webGamepadServer.on("/finish", HTTP_GET, webGamepadFinishTest);
+  webGamepadServer.onNotFound(
+      []() { webGamepadServer.send(404, "text/plain", "Not found"); });
+  webGamepadServer.begin();
+  webGamepadServerStarted = true;
+  Serial.println("[WEB] Gamepad server started on port 80");
+}
+
+static void webGamepadEnsureWifiConnected(uint32_t now) {
+  if (!webGamepadCredentialsReady()) {
+    snprintf(webGamepadWifiText, sizeof(webGamepadWifiText), "set creds");
+    snprintf(webGamepadIpText, sizeof(webGamepadIpText), "--");
+    return;
+  }
+
+  if (!webGamepadWifiConfigured) {
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    webGamepadWifiConfigured = true;
+    webGamepadLastRetryMs = now;
+    snprintf(webGamepadWifiText, sizeof(webGamepadWifiText), "connecting");
+    Serial.printf("[WEB] Connecting to SSID: %s\n", WIFI_SSID);
+  }
+
+  const wl_status_t status = WiFi.status();
+  if (status == WL_CONNECTED) {
+    if (!webGamepadWifiConnected) {
+      webGamepadWifiConnected = true;
+      IPAddress ip = WiFi.localIP();
+      snprintf(webGamepadIpText, sizeof(webGamepadIpText), "%u.%u.%u.%u", ip[0],
+               ip[1], ip[2], ip[3]);
+      Serial.printf("[WEB] Connected. %s\n", webGamepadIpText);
+      if (!webGamepadServerStarted) {
+        webGamepadEnsureServerStarted();
+      }
+    }
+    snprintf(webGamepadWifiText, sizeof(webGamepadWifiText), "connected");
+    return;
+  }
+
+  if (webGamepadWifiConnected) {
+    webGamepadWifiConnected = false;
+    webGamepadStopMotors();
+  }
+
+  if ((now - webGamepadLastRetryMs) >= 15000) {
+    webGamepadLastRetryMs = now;
+    // Retry by calling begin again (avoid disconnect which may alter lwIP
+    // state)
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    snprintf(webGamepadWifiText, sizeof(webGamepadWifiText), "retrying");
+    Serial.println("[WEB] WiFi retry");
+  } else {
+    snprintf(webGamepadWifiText, sizeof(webGamepadWifiText), "connecting");
+  }
+
+  snprintf(webGamepadIpText, sizeof(webGamepadIpText), "--");
+}
+
+// ============ INIT FUNCTIONS ============
+void initpower() {
+  // Prevent brief LOW glitch when switching pin mode to OUTPUT.
+  // Setting the output value first keeps the rail enabled during boot.
+  digitalWrite(SW_POWER_PIN, HIGH);
+  pinMode(SW_POWER_PIN, OUTPUT);
+}
+void power(bool state) { digitalWrite(SW_POWER_PIN, state ? HIGH : LOW); }
+void initOLED() {
+  // Ensure I2C uses the configured OLED pins from IO.h
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;)
+      ; // Halt if display fails
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println(F("Initializing..."));
+  display.display();
+
+  delay(1000);
+  Serial.println("[OLED] Initialized successfully");
+}
+
+void initBuzzer() {
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void initButton() {
+  pinMode(BUTTON1_PIN, BUTTON_PINMODE);
+  pinMode(BUTTON2_PIN, BUTTON_PINMODE);
+  pinMode(BUTTON3_PIN, BUTTON_PINMODE);
+  pinMode(BUTTON4_PIN, BUTTON_PINMODE);
+
+  // Illumination LED for line sensor reflection test (Normal Mode)
+  pinMode(LED_POWER_PIN, OUTPUT);
+  digitalWrite(LED_POWER_PIN, LOW);
+}
+
+void initEncoder() {
+  pinMode(ENC1_A_PIN, INPUT_PULLUP);
+  pinMode(ENC2_A_PIN, INPUT_PULLUP);
+}
+
+void initMotor() {
+  pinMode(IN1_PIN, OUTPUT);
+  pinMode(IN2_PIN, OUTPUT);
+  pinMode(IN3_PIN, OUTPUT);
+  pinMode(IN4_PIN, OUTPUT);
+  pinMode(INH1_PIN, OUTPUT);
+
+  // Setup LEDC PWM for motor direction pins
+  ledcSetup(MOTOR1_IN1_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
+  ledcSetup(MOTOR1_IN2_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
+  ledcSetup(MOTOR2_IN3_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
+  ledcSetup(MOTOR2_IN4_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES_BITS);
+
+  ledcAttachPin(IN1_PIN, MOTOR1_IN1_CH);
+  ledcAttachPin(IN2_PIN, MOTOR1_IN2_CH);
+  ledcAttachPin(IN3_PIN, MOTOR2_IN3_CH);
+  ledcAttachPin(IN4_PIN, MOTOR2_IN4_CH);
+
+  // Start with all outputs low (motors disabled)
+  ledcWrite(MOTOR1_IN1_CH, 0);
+  ledcWrite(MOTOR1_IN2_CH, 0);
+  ledcWrite(MOTOR2_IN3_CH, 0);
+  ledcWrite(MOTOR2_IN4_CH, 0);
+  digitalWrite(INH1_PIN, LOW);
+}
+
+void initADC() {
+  // Setup ADC for line sensor reading on MUX_ADC_PIN
+  analogReadResolution(12); // 12-bit ADC (0-4095)
+  pinMode(MUX_ADC_PIN, INPUT);
+  pinMode(VBAT_SENSE_PIN, INPUT);
+}
+
+void initMUX() {
+  // Setup MUX select pins (S0, S1, S2, S3)
+  pinMode(MUX_S0_PIN, OUTPUT);
+  pinMode(MUX_S1_PIN, OUTPUT);
+  pinMode(MUX_S2_PIN, OUTPUT);
+  pinMode(MUX_S3_PIN, OUTPUT);
+
+  // Start at channel 0
+  digitalWrite(MUX_S0_PIN, LOW);
+  digitalWrite(MUX_S1_PIN, LOW);
+  digitalWrite(MUX_S2_PIN, LOW);
+  digitalWrite(MUX_S3_PIN, LOW);
+
+  // Setup default thresholds for Line Sensor
+  for (int i = 0; i < 16; i++) {
+    line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
+  }
+}
+
+void initGY25() {
+  // Setup Serial1 for GY25 using proven working settings (see gy25.txt)
+  Serial1.begin(115200, SERIAL_8N1, GY25_RX_PIN, GY25_TX_PIN);
+  gy25_last_read = millis();
+
+#if GY25_DEBUG
+  Serial.printf("[GY25] Serial1 started: baud=115200 RX=%d TX=%d\n",
+                GY25_RX_PIN, GY25_TX_PIN);
+  // Drain garbage bytes so framing starts clean.
+  while (Serial1.available()) {
+    (void)Serial1.read();
+  }
+#endif
+}
+
+void initServo() {
+  // Setup PWM channels for servo control on PWM1 (GPIO6) and PWM2 (GPIO7)
+  // Servo frequency: 50Hz (20ms period), 12-bit resolution
+  ledcSetup(0, 50, 12); // Channel 0: 50Hz, 12-bit
+  ledcSetup(1, 50, 12); // Channel 1: 50Hz, 12-bit
+  ledcAttachPin(PWM1_PIN, 0);
+  ledcAttachPin(PWM2_PIN, 1);
+
+  setServo(1, 1500);
+  setServo(2, 1500);
+}
+
+void setupPCNT() {
+  // Configure PCNT for Encoder 1 (GPIO41)
+  pcnt_config_t pcnt_config_1;
+  memset(&pcnt_config_1, 0, sizeof(pcnt_config_t));
+  pcnt_config_1.pulse_gpio_num = ENC1_A_PIN;
+  pcnt_config_1.ctrl_gpio_num = PCNT_PIN_NOT_USED;
+  pcnt_config_1.counter_h_lim = 10000;
+  pcnt_config_1.counter_l_lim = -10000;
+  pcnt_config_1.unit = PCNT_UNIT_0;
+  pcnt_config_1.channel = PCNT_CHANNEL_0;
+  pcnt_config_1.pos_mode = PCNT_COUNT_INC;
+  pcnt_config_1.neg_mode = PCNT_COUNT_DIS;
+
+  pcnt_unit_config(&pcnt_config_1);
+  pcnt_counter_pause(PCNT_UNIT_0);
+  pcnt_counter_clear(PCNT_UNIT_0);
+  pcnt_counter_resume(PCNT_UNIT_0);
+
+  // Configure PCNT for Encoder 2 (GPIO42)
+  pcnt_config_t pcnt_config_2;
+  memset(&pcnt_config_2, 0, sizeof(pcnt_config_t));
+  pcnt_config_2.pulse_gpio_num = ENC2_A_PIN;
+  pcnt_config_2.ctrl_gpio_num = PCNT_PIN_NOT_USED;
+  pcnt_config_2.counter_h_lim = 10000;
+  pcnt_config_2.counter_l_lim = -10000;
+  pcnt_config_2.unit = PCNT_UNIT_1;
+  pcnt_config_2.channel = PCNT_CHANNEL_0;
+  pcnt_config_2.pos_mode = PCNT_COUNT_INC;
+  pcnt_config_2.neg_mode = PCNT_COUNT_DIS;
+
+  pcnt_unit_config(&pcnt_config_2);
+  pcnt_counter_pause(PCNT_UNIT_1);
+  pcnt_counter_clear(PCNT_UNIT_1);
+  pcnt_counter_resume(PCNT_UNIT_1);
+}
+
+// ============ UTILITY FUNCTIONS ============
+
+void displayOLED(const char *line1, const char *line2, const char *line3,
+                 const char *line4) {
+  static char prev1[64] = "";
+  static char prev2[64] = "";
+  static char prev3[64] = "";
+  static char prev4[64] = "";
+  static uint32_t last_serial_ms = 0;
+  static bool first_frame = true;
+
+  const char *l1 = line1 ? line1 : "";
+  const char *l2 = line2 ? line2 : "";
+  const char *l3 = line3 ? line3 : "";
+  const char *l4 = line4 ? line4 : "";
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+
+  if (line1)
+    display.println(line1);
+  if (line2)
+    display.println(line2);
+  if (line3)
+    display.println(line3);
+  if (line4)
+    display.println(line4);
+
+  display.display();
+
+  bool changed = (strcmp(prev1, l1) != 0) || (strcmp(prev2, l2) != 0) ||
+                 (strcmp(prev3, l3) != 0) || (strcmp(prev4, l4) != 0);
+
+  uint32_t now = millis();
+  bool time_ok = (now - last_serial_ms) >= 200;
+
+  if (first_frame || (changed && time_ok)) {
+    Serial.println("[OLED]");
+    Serial.println(l1);
+    Serial.println(l2);
+    Serial.println(l3);
+    Serial.println(l4);
+    Serial.println("---");
+
+    snprintf(prev1, sizeof(prev1), "%s", l1);
+    snprintf(prev2, sizeof(prev2), "%s", l2);
+    snprintf(prev3, sizeof(prev3), "%s", l3);
+    snprintf(prev4, sizeof(prev4), "%s", l4);
+    last_serial_ms = now;
+    first_frame = false;
+  }
+}
+
+void printSerial(const char *msg) { Serial.println(msg); }
+
+// ============ GY25 MODULE ============
+
+#ifndef GY25_DEBUG
+#define GY25_DEBUG 0
+#endif
+
+#if GY25_DEBUG
+static void gy25HexDump(const uint8_t *buf, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    Serial.printf("%02X%s", buf[i], (i + 1 == len) ? "" : " ");
+  }
+}
+#endif
+
+int16_t readGY25Yaw() {
+  static uint32_t last_dbg_ms = 0;
+  static uint32_t bad_header_count = 0;
+  static uint32_t bad_frame_count = 0;
+  static uint8_t frame[8];
+  static uint8_t frame_idx = 0;
+
+  // Parse binary frames (8 bytes):
+  // [0]=0xAA, [1..2]=yaw, [3..4]=pitch, [5..6]=roll, [7]=0x55
+  while (Serial1.available()) {
+    const int v = Serial1.read();
+    if (v < 0) {
+      break;
+    }
+    const uint8_t b = static_cast<uint8_t>(v);
+
+    if (frame_idx == 0 && b != 0xAA) {
+      bad_header_count++;
+      continue;
+    }
+
+    frame[frame_idx++] = b;
+    if (frame_idx < sizeof(frame)) {
+      continue;
+    }
+
+    frame_idx = 0;
+
+    if (frame[7] != 0x55) {
+      bad_frame_count++;
+      continue;
+    }
+
+    gy25_yaw =
+        (static_cast<int16_t>(frame[1]) << 8) | static_cast<int16_t>(frame[2]);
+    gy25_pitch =
+        (static_cast<int16_t>(frame[3]) << 8) | static_cast<int16_t>(frame[4]);
+    gy25_roll =
+        (static_cast<int16_t>(frame[5]) << 8) | static_cast<int16_t>(frame[6]);
+    gy25_last_read = millis();
+    gy25_timeout = false;
+
+#if GY25_DEBUG
+    {
+      const uint32_t now = millis();
+      if (now - last_dbg_ms >= 250) {
+        last_dbg_ms = now;
+        Serial.printf("[GY25] OK Y=%.2f P=%.2f R=%.2f avail=%d badHdr=%lu "
+                      "badFrm=%lu bytes: ",
+                      gy25_yaw / 100.0f, gy25_pitch / 100.0f,
+                      gy25_roll / 100.0f, Serial1.available(),
+                      static_cast<unsigned long>(bad_header_count),
+                      static_cast<unsigned long>(bad_frame_count));
+        gy25HexDump(frame, sizeof(frame));
+        Serial.println();
+      }
+    }
+#endif
+    return gy25_yaw;
+  }
+
+#if GY25_DEBUG
+  {
+    const uint32_t now = millis();
+    if (now - last_dbg_ms >= 1000) {
+      last_dbg_ms = now;
+      Serial.printf(
+          "[GY25] status avail=%d age=%lums Y=%.2f P=%.2f R=%.2f timeout=%u "
+          "badHdr=%lu badFrm=%lu\n",
+          Serial1.available(), static_cast<unsigned long>(now - gy25_last_read),
+          gy25_yaw / 100.0f, gy25_pitch / 100.0f, gy25_roll / 100.0f,
+          gy25_timeout ? 1U : 0U, static_cast<unsigned long>(bad_header_count),
+          static_cast<unsigned long>(bad_frame_count));
+    }
+  }
+#endif
+
+  if (millis() - gy25_last_read > 1000) {
+    gy25_timeout = true;
+  }
+
+  return gy25_yaw;
+}
+
+// ============ ENCODER PCNT MODULE ============
+
+int32_t readEncoder(uint8_t encoderNum) {
+  int16_t count = 0;
+
+  if (encoderNum == 1) {
+    pcnt_get_counter_value(PCNT_UNIT_0, &count);
+    enc1_count = count;
+  } else if (encoderNum == 2) {
+    pcnt_get_counter_value(PCNT_UNIT_1, &count);
+    enc2_count = count;
+  }
+
+  return (int32_t)count;
+}
+
+void resetEncoder(uint8_t encoderNum) {
+  if (encoderNum == 1) {
+    pcnt_counter_pause(PCNT_UNIT_0);
+    pcnt_counter_clear(PCNT_UNIT_0);
+    pcnt_counter_resume(PCNT_UNIT_0);
+    enc1_count = 0;
+    enc1_last_count = 0;
+  } else if (encoderNum == 2) {
+    pcnt_counter_pause(PCNT_UNIT_1);
+    pcnt_counter_clear(PCNT_UNIT_1);
+    pcnt_counter_resume(PCNT_UNIT_1);
+    enc2_count = 0;
+    enc2_last_count = 0;
+  }
+}
+
+// ============ SERVO MODULE ============
+
+void setServo(uint8_t servoNum, uint16_t pulseUs) {
+  // Convert pulse width in microseconds to PWM duty cycle
+  uint16_t duty = (pulseUs * 4095) / 20000;
+  if (duty > 4095)
+    duty = 4095;
+
+  if (servoNum == 1) {
+    ledcWrite(0, duty);
+    servo1_pulse = pulseUs;
+  } else if (servoNum == 2) {
+    ledcWrite(1, duty);
+    servo2_pulse = pulseUs;
+  }
+}
+
+// ============ MOTOR MODULE ============
+
+void setMotor(uint8_t motorNum, int16_t speed) {
+  if (speed > 255)
+    speed = 255;
+  if (speed < -255)
+    speed = -255;
+
+  bool forward = (speed > 0);
+  uint8_t pwm_val = abs(speed);
+
+  if (motorNum == 1) {
+    ledcWrite(MOTOR1_IN1_CH, forward ? pwm_val : 0);
+    ledcWrite(MOTOR1_IN2_CH, forward ? 0 : pwm_val);
+    motor1_speed = speed;
+  } else if (motorNum == 2) {
+    ledcWrite(MOTOR2_IN3_CH, forward ? pwm_val : 0);
+    ledcWrite(MOTOR2_IN4_CH, forward ? 0 : pwm_val);
+    motor2_speed = speed;
+  }
+
+  // Shared enable ON if at least one motor has non-zero command
+  static uint32_t last_active_ms = 0;
+  const uint32_t now = millis();
+  const bool active = (motor1_speed != 0) || (motor2_speed != 0);
+  if (active) {
+    last_active_ms = now;
+  }
+  const bool enable = active || (now - last_active_ms < MOTOR_ENABLE_HOLD_MS);
+  digitalWrite(INH1_PIN, enable ? HIGH : LOW);
+}
+
+void stopMotors() {
+  ledcWrite(MOTOR1_IN1_CH, 0);
+  ledcWrite(MOTOR1_IN2_CH, 0);
+  ledcWrite(MOTOR2_IN3_CH, 0);
+  ledcWrite(MOTOR2_IN4_CH, 0);
+  digitalWrite(INH1_PIN, LOW);
+
+  motor1_speed = 0;
+  motor2_speed = 0;
+}
+
+// ============ LINE SENSOR 16CH MODULE ============
+
+void selectMUXChannel(uint8_t channel) {
+  channel = channel & 0x0F;
+
+  switch (channel) {
+  case 0:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 1:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 2:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 3:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 4:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 5:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 6:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 7:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, LOW);
+    break;
+  case 8:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  case 9:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  case 10:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  case 11:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  case 12:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  case 13:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  case 14:
+    digitalWrite(MUX_S0_PIN, LOW);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  case 15:
+    digitalWrite(MUX_S0_PIN, HIGH);
+    digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH);
+    digitalWrite(MUX_S3_PIN, HIGH);
+    break;
+  }
+
+  delayMicroseconds(100);
+}
+
+uint16_t readLineSensor(uint8_t channel) {
+  selectMUXChannel(channel);
+
+  // Baca langsung ADC (tanpa filter peak-to-peak 2kHz)
+  uint16_t raw = analogRead(MUX_ADC_PIN);
+
+  line_sensor_raw[channel] = raw;
+  return raw;
+}
+
+// Menggunakan threshold dari array hasil kalibrasi
+uint8_t readLineSensorDigital(uint8_t channel) {
+  uint16_t raw = readLineSensor(channel);
+  uint8_t digital = (raw > line_sensor_threshold[channel]) ? 1 : 0;
+  line_sensor_digital[channel] = digital;
+  return digital;
+}
+
+static void ensureLineSensorThresholdDefaults() {
+  for (int i = 0; i < 16; i++) {
+    if (line_sensor_threshold[i] == 0) {
+      line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
+    }
+  }
+}
+
+void initPIDController(PIDController *pid, float Kp, float Ki, float Kd,
+                       float integral_limit, float output_limit) {
+  if (pid == nullptr) {
+    return;
+  }
+
+  pid->Kp = Kp;
+  pid->Ki = Ki;
+  pid->Kd = Kd;
+  pid->integral = 0.0f;
+  pid->last_error = 0.0f;
+  pid->integral_limit = integral_limit;
+  pid->output_limit = output_limit;
+}
+
+float calculatePID(PIDController *pid, float setpoint, float current_value,
+                   float dt) {
+  if (pid == nullptr || dt <= 0.0f) {
+    return 0.0f;
+  }
+
+  const float error = setpoint - current_value;
+  pid->integral += error * dt;
+
+  if (pid->integral > pid->integral_limit) {
+    pid->integral = pid->integral_limit;
+  } else if (pid->integral < -pid->integral_limit) {
+    pid->integral = -pid->integral_limit;
+  }
+
+  const float derivative = (error - pid->last_error) / dt;
+  pid->last_error = error;
+
+  float output =
+      (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
+
+  if (output > pid->output_limit) {
+    output = pid->output_limit;
+  } else if (output < -pid->output_limit) {
+    output = -pid->output_limit;
+  }
+
+  return output;
+}
+
+void resetPID(PIDController *pid) {
+  if (pid == nullptr) {
+    return;
+  }
+
+  pid->integral = 0.0f;
+  pid->last_error = 0.0f;
+}
+
+static void syncPIDController() {
+  initPIDController(&pid_line_following, pid_current_Kp, pid_current_Ki,
+                    pid_current_Kd, pid_integral_limit, pid_output_limit);
+}
+
+static void savePIDSettings() {
+  pid_preferences.begin("pidline", false);
+  pid_preferences.putFloat("kp", pid_current_Kp);
+  pid_preferences.putFloat("ki", pid_current_Ki);
+  pid_preferences.putFloat("kd", pid_current_Kd);
+  pid_preferences.putFloat("base", pid_base_speed);
+  pid_preferences.end();
+}
+
+static void loadPIDSettings() {
+  if (pid_settings_loaded) {
+    return;
+  }
+
+  ensureLineSensorThresholdDefaults();
+
+  pid_preferences.begin("pidline", true);
+  pid_current_Kp = pid_preferences.getFloat("kp", pid_current_Kp);
+  pid_current_Ki = pid_preferences.getFloat("ki", pid_current_Ki);
+  pid_current_Kd = pid_preferences.getFloat("kd", pid_current_Kd);
+  pid_base_speed = pid_preferences.getFloat("base", pid_base_speed);
+  pid_preferences.end();
+
+  if (pid_current_Kp < 0.0f) {
+    pid_current_Kp = 0.0f;
+  }
+  if (pid_current_Ki < 0.0f) {
+    pid_current_Ki = 0.0f;
+  }
+  if (pid_current_Kd < 0.0f) {
+    pid_current_Kd = 0.0f;
+  }
+  if (pid_base_speed < 0.0f) {
+    pid_base_speed = 0.0f;
+  } else if (pid_base_speed > 255.0f) {
+    pid_base_speed = 255.0f;
+  }
+
+  syncPIDController();
+  resetPID(&pid_line_following);
+  pid_settings_loaded = true;
+}
+
+void resetPIDValues() {
+  pid_current_Kp = 0.8f;
+  pid_current_Ki = 0.001f;
+  pid_current_Kd = 0.2f;
+  pid_base_speed = 140.0f;
+  syncPIDController();
+  resetPID(&pid_line_following);
+  savePIDSettings();
+}
+
+void calibrateLineSensorsAuto() {
+  ensureLineSensorThresholdDefaults();
+
+  for (int i = 0; i < 16; i++) {
+    if (line_sensor_max[i] == 0 && line_sensor_min[i] == 0) {
+      line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
+    } else {
+      line_sensor_threshold[i] =
+          static_cast<uint16_t>((line_sensor_max[i] + line_sensor_min[i]) / 2);
+    }
+  }
+}
+
+float calculateLinePosition() {
+  ensureLineSensorThresholdDefaults();
+
+  float weighted_sum = 0.0f;
+  float weight_total = 0.0f;
+
+  for (int i = 0; i < 16; i++) {
+    const uint8_t active = readLineSensorDigital(i);
+    if (active) {
+      const float strength = static_cast<float>(line_sensor_raw[i]) -
+                             static_cast<float>(line_sensor_threshold[i]);
+      const float weight = (strength > 0.0f) ? strength : 1.0f;
+      weighted_sum += static_cast<float>(i) * weight;
+      weight_total += weight;
+    }
+  }
+
+  if (weight_total <= 0.0f) {
+    line_detected = false;
+    return pid_line_position;
+  }
+
+  line_detected = true;
+  pid_line_position = weighted_sum / weight_total;
+  return pid_line_position;
+}
+
+bool isLineDetected() { return line_detected; }
+
+void followLinePID(float base_speed, float max_speed_diff) {
+  if (!pid_enabled) {
+    stopMotors();
+    return;
+  }
+
+  if (base_speed < 0.0f) {
+    base_speed = 0.0f;
+  } else if (base_speed > 255.0f) {
+    base_speed = 255.0f;
+  }
+
+  if (max_speed_diff < 0.0f) {
+    max_speed_diff = 0.0f;
+  }
+
+  const uint32_t now = millis();
+  float dt = 0.02f;
+  if (pid_last_update_ms != 0) {
+    dt = (now - pid_last_update_ms) / 1000.0f;
+    if (dt <= 0.0f) {
+      dt = 0.02f;
+    }
+  }
+  pid_last_update_ms = now;
+
+  const float line_position = calculateLinePosition();
+  if (!line_detected) {
+    stopMotors();
+    resetPID(&pid_line_following);
+    return;
+  }
+
+  pid_line_following.output_limit = max_speed_diff;
+  const float correction =
+      calculatePID(&pid_line_following, 7.5f, line_position, dt);
+
+  int16_t left_speed = static_cast<int16_t>(base_speed - correction);
+  int16_t right_speed = static_cast<int16_t>(base_speed + correction);
+
+  if (left_speed > 255) {
+    left_speed = 255;
+  } else if (left_speed < -255) {
+    left_speed = -255;
+  }
+  if (right_speed > 255) {
+    right_speed = 255;
+  } else if (right_speed < -255) {
+    right_speed = -255;
+  }
+
+  setMotor(1, left_speed);
+  setMotor(2, right_speed);
+}
+
+void printPIDDebug() {
+  Serial.printf(
+      "[PID] KP:%.3f KI:%.3f KD:%.3f BASE:%.1f POS:%.2f LINE:%s RUN:%s\n",
+      pid_current_Kp, pid_current_Ki, pid_current_Kd, pid_base_speed,
+      pid_line_position, line_detected ? "ON" : "OFF",
+      pid_enabled ? "YES" : "NO");
+}
+
+// ============ BUTTON POLLING ============
+
+void pollButtons() {
+  uint32_t now = millis();
+  // Serial.println("Polling buttons...");
+  static int btn1_raw_last = BUTTON_RELEASED;
+  static int btn2_raw_last = BUTTON_RELEASED;
+  static int btn3_raw_last = BUTTON_RELEASED;
+  static int btn4_raw_last = BUTTON_RELEASED;
+
+  int btn1_state = digitalRead(BUTTON1_PIN);
+  int btn2_state = digitalRead(BUTTON2_PIN);
+  int btn3_state = digitalRead(BUTTON3_PIN);
+  int btn4_state = digitalRead(BUTTON4_PIN);
+
+  // BTN1 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
+  if (btn1_state != btn1_raw_last) {
+    btn1_raw_last = btn1_state;
+    button1_press_time = now;
+  }
+  button1_pressed = false;
+  if ((now - button1_press_time) > button_debounce_time) {
+    if (btn1_state != button1_last) {
+      button1_last = btn1_state; // debounced stable state
+      if (button1_last == BUTTON_PRESSED) {
+        button1_pressed = true;
+      }
+    }
+  }
+
+  // BTN2 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
+  if (btn2_state != btn2_raw_last) {
+    btn2_raw_last = btn2_state;
+    button2_press_time = now;
+  }
+  button2_pressed = false;
+  if ((now - button2_press_time) > button_debounce_time) {
+    if (btn2_state != button2_last) {
+      button2_last = btn2_state; // debounced stable state
+      if (button2_last == BUTTON_PRESSED) {
+        button2_pressed = true;
+      }
+    }
+  }
+
+  // BTN3 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
+  if (btn3_state != btn3_raw_last) {
+    btn3_raw_last = btn3_state;
+    button3_press_time = now;
+  }
+  button3_pressed = false;
+  if ((now - button3_press_time) > button_debounce_time) {
+    if (btn3_state != button3_last) {
+      button3_last = btn3_state; // debounced stable state
+      if (button3_last == BUTTON_PRESSED) {
+        button3_pressed = true;
+      }
+    }
+  }
+
+  // BTN4 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
+  if (btn4_state != btn4_raw_last) {
+    btn4_raw_last = btn4_state;
+    button4_press_time = now;
+  }
+  button4_pressed = false;
+  if ((now - button4_press_time) > button_debounce_time) {
+    if (btn4_state != button4_last) {
+      button4_last = btn4_state; // debounced stable state
+      if (button4_last == BUTTON_PRESSED) {
+        button4_pressed = true;
+      }
+    }
+  }
+}
+
+// ============ SINGLE SENSOR CHECK MODE ============
+
+// Cek sensor MUX satu-per-satu (mirip "tes robot basic").
+// - BTN1 = pindah ke channel berikutnya (0->15->0) + buzzer beep.
+// - LED iluminasi dijaga konstan PWM 200 selama mode aktif.
+// - Keluar mode: tahan BTN1+BTN2 bersamaan (ditangani di runTestSequence()).
+void runSingleSensorCheck() {
+  const uint32_t now = millis();
+
+  // Jaga LED iluminasi konstan di PWM 200.
+  analogWrite(LED_POWER_PIN, 200);
+
+  // Pindah channel dengan BTN1, tapi abaikan bila BTN2 juga ditekan supaya
+  // kombo keluar (BTN1+BTN2) tidak ikut memindah channel.
+  static uint32_t buzzer_off_ms = 0;
+  if (button1_pressed && digitalRead(BUTTON2_PIN) == BUTTON_RELEASED) {
+    single_sensor_channel = (single_sensor_channel + 1) % 16;
+    digitalWrite(BUZZER_PIN, HIGH); // beep pendek non-blocking
+    buzzer_off_ms = now + 60;
+  }
+  if (buzzer_off_ms != 0 && now >= buzzer_off_ms) {
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzer_off_ms = 0;
+  }
+
+  // Baca channel aktif (selectMUXChannel + analogRead internal).
+  uint16_t val = readLineSensor(single_sensor_channel);
+
+  // Tampilan OLED.
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("CEK SENSOR 1-1");
+  display.setCursor(0, 12);
+  display.printf("CH: %u", single_sensor_channel);
+  display.setCursor(0, 24);
+  display.printf("VAL: %u", val);
+  display.setCursor(0, 36);
+  display.print("LED PWM: 200");
+  display.setCursor(0, 52);
+  display.print("Hold B1+B2 = Exit");
+  display.display();
+
+  // Serial debug periodik.
+  static uint32_t last_serial_ms = 0;
+  if (now - last_serial_ms >= 50) {
+    last_serial_ms = now;
+    Serial.printf("[SENSOR1] MUX CH%u | Value: %u\n", single_sensor_channel,
+                  val);
+  }
+}
+
+// ============ TEST STATE MACHINE ============
+
+void runTestSequence() {
+  uint32_t now = millis();
+
+  if (!pid_settings_loaded) {
+    loadPIDSettings();
+  }
+
+  // Global safety action: hold BUTTON3 for >3s to cut system power
+  int btn3_state = digitalRead(BUTTON3_PIN);
+  if (btn3_state == BUTTON_PRESSED) {
+    if (button3_hold_start == 0) {
+      button3_hold_start = now;
+    }
+
+    uint32_t held_ms = now - button3_hold_start;
+    if (!button3_poweroff_latched && held_ms >= 3000) {
+      button3_poweroff_latched = true;
+      displayOLED("POWER OFF", "BTN3 > 3s", "Shutting down", "");
+      power(false);
+      test_running = 0;
+      current_test_state = TEST_STATE_IDLE;
+      return;
+    } else if (current_test_state != TEST_STATE_PID_LINE) {
+      char countdown_buf[32];
+      uint32_t remain_ms = 3000 - held_ms;
+      float remain_s = remain_ms / 1000.0f;
+      snprintf(countdown_buf, sizeof(countdown_buf), "%.1f s", remain_s);
+      displayOLED("HOLD BTN3", "Power off in", countdown_buf, "Release=Cancel");
+      return;
+    }
+  } else {
+    button3_hold_start = 0;
+    button3_poweroff_latched = false;
+  }
+
+  // Toggle mode cek sensor satu-per-satu: tahan BTN1+BTN2 bersamaan ~1s.
+  static uint32_t combo_hold_start = 0;
+  static bool combo_handled = false;
+  bool both_down = (digitalRead(BUTTON1_PIN) == BUTTON_PRESSED) &&
+                   (digitalRead(BUTTON2_PIN) == BUTTON_PRESSED);
+  if (both_down) {
+    if (combo_hold_start == 0) {
+      combo_hold_start = now;
+    }
+    if (!combo_handled && (now - combo_hold_start) >= 1000) {
+      combo_handled = true;
+      single_sensor_active = !single_sensor_active;
+      if (single_sensor_active) {
+        stopMotors(); // safety saat masuk mode
+        single_sensor_channel = 0;
+      } else {
+        analogWrite(LED_POWER_PIN, 0);  // lepas PWM
+        pinMode(LED_POWER_PIN, OUTPUT); // kembalikan kontrol digitalWrite
+        digitalWrite(LED_POWER_PIN, LOW);
+      }
+    }
+  } else {
+    combo_hold_start = 0;
+    combo_handled = false;
+  }
+
+  if (single_sensor_active) {
+    runSingleSensorCheck();
+    return; // konsumsi loop; lewati state-machine biasa
+  }
+
+  if (!test_running) {
+    current_test_state = TEST_STATE_IDLE;
+  }
+
+  if (button1_pressed && current_test_state == TEST_STATE_IDLE) {
+    test_running = 1;
+    current_test_state = TEST_STATE_GY25;
+    test_state_timer = now;
+    test_phase = 0;
+  } else if (current_test_state != TEST_STATE_BUTTON) {
+    // Global navigation (manual): BTN1=Next, BTN2=Prev
+    if (button1_pressed && current_test_state != TEST_STATE_IDLE &&
+        current_test_state != TEST_STATE_DONE &&
+        current_test_state != TEST_STATE_LINE_SENSOR &&
+        current_test_state != TEST_STATE_PID_LINE) {
+      current_test_state++;
+      test_state_timer = now;
+      test_phase = 0;
+    } else if (button2_pressed && current_test_state > TEST_STATE_GY25 &&
+               current_test_state != TEST_STATE_IDLE &&
+               current_test_state != TEST_STATE_PID_LINE) {
+      current_test_state--;
+      test_state_timer = now;
+      test_phase = 0;
+    }
+  }
+
+  // Cleanup/entry actions on state transitions (manual navigation)
+  static uint8_t last_state = TEST_STATE_IDLE;
+  if (last_state != current_test_state) {
+    if (last_state == TEST_STATE_MOTOR1 || last_state == TEST_STATE_MOTOR2) {
+      stopMotors();
+    }
+    if (last_state == TEST_STATE_PID_LINE) {
+      stopMotors();
+      pid_enabled = false;
+      pid_menu_active = false;
+      pid_last_update_ms = 0;
+    }
+    if (last_state == TEST_STATE_WEB_GAMEPAD) {
+      webGamepadStopMotors();
+    }
+    if (last_state == TEST_STATE_BUZZER) {
+      digitalWrite(BUZZER_PIN, LOW);
+    }
+    if (current_test_state == TEST_STATE_ENC1) {
+      resetEncoder(1);
+    } else if (current_test_state == TEST_STATE_ENC2) {
+      resetEncoder(2);
+    }
+    last_state = current_test_state;
+  }
+
+  // Ensure buzzer is off outside buzzer test
+  if (current_test_state != TEST_STATE_BUZZER) {
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  // LED_POWER behavior:
+  // - LED_POWER state: blink continuously as visual test
+  // - LINE_SENSOR state: force ON for photodiode reflection
+  bool led_reflection_out = false;
+
+  if (current_test_state == TEST_STATE_LED_POWER) {
+    led_reflection_out = (((now / 300) % 2) == 0);
+  } else if (current_test_state == TEST_STATE_LINE_SENSOR) {
+    led_reflection_out = true;
+  } else if (current_test_state == TEST_STATE_PID_LINE) {
+    led_reflection_out = true;
+  }
+
+  digitalWrite(LED_POWER_PIN, led_reflection_out ? HIGH : LOW);
+
+  // Debug LED output transitions and periodic status in LED test mode
+  if (led_reflection_out != led_power_last_out) {
+    Serial.printf("[LED] STATE:%u PIN:%u OUT:%s\n", current_test_state,
+                  LED_POWER_PIN, led_reflection_out ? "ON" : "OFF");
+    led_power_last_out = led_reflection_out;
+  }
+  if (current_test_state == TEST_STATE_LED_POWER &&
+      (now - led_power_last_debug_ms) >= 500) {
+    led_power_last_debug_ms = now;
+    Serial.printf("[LED_TEST] BLINK:%s BTN1=NEXT\n",
+                  led_reflection_out ? "ON" : "OFF");
+  }
+
+  if (!test_running) {
+    displayOLED("READY", "Press BTN1", "to start test", "");
+    return;
+  }
+
+  switch (current_test_state) {
+
+  case TEST_STATE_GY25: {
+    readGY25Yaw();
+    char l2[32];
+    char l3[32];
+    snprintf(l2, sizeof(l2), "Y:%.2f P:%.2f", gy25_yaw / 100.0f,
+             gy25_pitch / 100.0f);
+    snprintf(l3, sizeof(l3), "R:%.2f %s", gy25_roll / 100.0f,
+             gy25_timeout ? "TIMEOUT" : "OK");
+    displayOLED("TEST: GY25", l2, l3, "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_BUTTON: {
+    // Show live button states on OLED.
+    // In this test, navigation is by HOLD (so you can tap buttons to test).
+    static uint32_t btn1_hold_start = 0;
+    static uint32_t btn2_hold_start = 0;
+
+    const int b1 = digitalRead(BUTTON1_PIN);
+    const int b2 = digitalRead(BUTTON2_PIN);
+    const int b3 = digitalRead(BUTTON3_PIN);
+    const int b4 = digitalRead(BUTTON4_PIN);
+
+    if (b1 == BUTTON_PRESSED) {
+      if (btn1_hold_start == 0)
+        btn1_hold_start = now;
+    } else {
+      btn1_hold_start = 0;
+    }
+    if (b2 == BUTTON_PRESSED) {
+      if (btn2_hold_start == 0)
+        btn2_hold_start = now;
+    } else {
+      btn2_hold_start = 0;
+    }
+
+    if (btn1_hold_start != 0 && (now - btn1_hold_start) >= 800) {
+      current_test_state++;
+      test_state_timer = now;
+      test_phase = 0;
+      btn1_hold_start = 0;
+      btn2_hold_start = 0;
+      return;
+    }
+    if (btn2_hold_start != 0 && (now - btn2_hold_start) >= 800 &&
+        current_test_state > TEST_STATE_GY25) {
+      current_test_state--;
+      test_state_timer = now;
+      test_phase = 0;
+      btn1_hold_start = 0;
+      btn2_hold_start = 0;
+      return;
+    }
+
+    char l1[32];
+    char l2[32];
+    snprintf(l1, sizeof(l1), "B1:%d B2:%d", b1, b2);
+    snprintf(l2, sizeof(l2), "B3:%d B4:%d", b3, b4);
+    displayOLED("TEST: BUTTON", l1, l2, "Hold1=Next Hold2=Prev");
+    break;
+  }
+
+  case TEST_STATE_BUZZER: {
+    // Keep buzzing while in this test (manual navigation).
+    const bool on = (((now - test_state_timer) / 200) % 2) == 0;
+    digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+    displayOLED("TEST: BUZZER", "Buzzing...", "", "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_ENC1: {
+    int32_t enc_val = readEncoder(1);
+    char buf[32];
+    sprintf(buf, "ENC1: %ld", enc_val);
+    displayOLED("TEST: ENCODER 1", buf, "Rotate wheel L",
+                "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_ENC2: {
+    int32_t enc_val = readEncoder(2);
+    char buf[32];
+    sprintf(buf, "ENC2: %ld", enc_val);
+    displayOLED("TEST: ENCODER 2", buf, "Rotate wheel R",
+                "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_SERVO1: {
+    // Repeat sweep while staying in this state (manual navigation)
+    uint32_t elapsed = (now - test_state_timer) % 2000;
+    uint16_t pulse;
+
+    if (elapsed < 1000) {
+      pulse = 1000 + (elapsed / 2);
+    } else if (elapsed < 2000) {
+      pulse = 1500 + ((elapsed - 1000) / 2);
+    } else {
+      pulse = 2000;
+    }
+
+    setServo(1, pulse);
+    char buf[32];
+    sprintf(buf, "SRV1: %u us", pulse);
+    displayOLED("TEST: SERVO 1", buf, "", "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_SERVO2: {
+    // Repeat sweep while staying in this state (manual navigation)
+    uint32_t elapsed = (now - test_state_timer) % 2000;
+    uint16_t pulse;
+
+    if (elapsed < 1000) {
+      pulse = 1000 + (elapsed / 2);
+    } else if (elapsed < 2000) {
+      pulse = 1500 + ((elapsed - 1000) / 2);
+    } else {
+      pulse = 2000;
+    }
+
+    setServo(2, pulse);
+    char buf[32];
+    sprintf(buf, "SRV2: %u us", pulse);
+    displayOLED("TEST: SERVO 2", buf, "", "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_MOTOR1: {
+    // Repeat ramp pattern while staying in this state (manual navigation)
+    // Add short brake/dead-time between direction changes for reliability.
+    // Cycle: 0-2.5s FWD ramp, 2.5-2.7s BRAKE, 2.7-5.2s REV ramp
+    uint32_t elapsed = (now - test_state_timer) % 5200;
+    if (test_phase == 0) {
+      resetEncoder(1);
+      test_phase = 1;
+    }
+
+    int16_t speed_cmd = 0;
+    const char *mode = "BRK";
+    if (elapsed < 2500) {
+      mode = "FWD";
+      speed_cmd = (elapsed * 255) / 2500; // forward ramp
+    } else if (elapsed < 2700) {
+      mode = "BRK";
+      speed_cmd = 0;
+    } else {
+      mode = "REV";
+      speed_cmd = -((int32_t)(elapsed - 2700) * 255) / 2500; // reverse ramp
+    }
+
+    setMotor(1, speed_cmd);
+    int32_t enc_val = readEncoder(1);
+
+    char buf1[32];
+    char buf2[32];
+    sprintf(buf1, "M1 %s PWM:%d", mode, abs(speed_cmd));
+    sprintf(buf2, "ENC1: %ld", enc_val);
+    displayOLED("TEST: MOTOR 1", buf1, buf2, "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_MOTOR2: {
+    // Repeat ramp pattern while staying in this state (manual navigation)
+    // Add short brake/dead-time between direction changes for reliability.
+    // Cycle: 0-2.5s FWD ramp, 2.5-2.7s BRAKE, 2.7-5.2s REV ramp
+    uint32_t elapsed = (now - test_state_timer) % 5200;
+    if (test_phase == 0) {
+      resetEncoder(2);
+      test_phase = 1;
+    }
+
+    int16_t speed_cmd = 0;
+    const char *mode = "BRK";
+    if (elapsed < 2500) {
+      mode = "FWD";
+      speed_cmd = (elapsed * 255) / 2500; // forward ramp
+    } else if (elapsed < 2700) {
+      mode = "BRK";
+      speed_cmd = 0;
+    } else {
+      mode = "REV";
+      speed_cmd = -((int32_t)(elapsed - 2700) * 255) / 2500; // reverse ramp
+    }
+
+    setMotor(2, speed_cmd);
+    int32_t enc_val = readEncoder(2);
+
+    char buf1[32];
+    char buf2[32];
+    sprintf(buf1, "M2 %s PWM:%d", mode, abs(speed_cmd));
+    sprintf(buf2, "ENC2: %ld", enc_val);
+    displayOLED("TEST: MOTOR 2", buf1, buf2, "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_LED_POWER: {
+    displayOLED("TEST: LED POWER", "LED ON for line", "sensor reflection",
+                "BTN1=Next");
+
+    // Stay in this test until operator presses BTN1 to continue
+    break;
+  }
+
+  case TEST_STATE_VBATT: {
+    // Read VBAT sense ADC (shows voltage at the sense pin; apply divider ratio
+    // externally if needed).
+    uint32_t raw_sum = 0;
+    uint32_t mv_sum = 0;
+    const uint8_t samples = 8;
+    for (uint8_t i = 0; i < samples; i++) {
+      raw_sum += analogRead(VBAT_SENSE_PIN);
+      mv_sum += analogReadMilliVolts(VBAT_SENSE_PIN);
+      delay(2);
+    }
+    const uint16_t raw = static_cast<uint16_t>(raw_sum / samples);
+    const uint16_t mv = static_cast<uint16_t>(mv_sum / samples);
+
+    const float vbat_mv = mv * VBAT_SCALE;
+
+    char l2[32];
+    char l3[32];
+    snprintf(l2, sizeof(l2), "RAW:%u", static_cast<unsigned>(raw));
+    snprintf(l3, sizeof(l3), "S:%umV B:%.2fV", static_cast<unsigned>(mv),
+             vbat_mv / 1000.0f);
+    displayOLED("TEST: VBATT", l2, l3, "BTN1=Next BTN2=Prev");
+    break;
+  }
+
+  case TEST_STATE_LINE_SENSOR: {
+    if (test_phase == 0) {
+      test_state_timer = now;
+      test_phase = 1;
+      is_calibrating = false;
+      line_sensor_entry_armed = false;
+    }
+
+    if (!line_sensor_entry_armed) {
+      if (!button1_pressed) {
+        line_sensor_entry_armed = true;
+      }
+    }
+
+    // --- Proses Kontrol Kalibrasi via BUTTON 4 ---
+    if (button4_pressed) {
+      is_calibrating = !is_calibrating; // Toggle mode kalibrasi
+      if (is_calibrating) {
+        // Mulai kalibrasi: Reset nilai min/max
+        for (int i = 0; i < 16; i++) {
+          line_sensor_max[i] = 0;
+          line_sensor_min[i] = 4095;
+        }
+      } else {
+        // Selesai kalibrasi: Hitung threshold tiap channel (Tengah-tengah /
+        // Midpoint)
+        Serial.print("[LINE] CALIBRATION DONE. Thresholds: ");
+        for (int i = 0; i < 16; i++) {
+          line_sensor_threshold[i] =
+              (line_sensor_max[i] + line_sensor_min[i]) / 2;
+          Serial.printf("%d:%u ", i, line_sensor_threshold[i]);
+        }
+        Serial.println();
+      }
+    }
+
+    // Lanjut ke Test WEB GAMEPAD via Button 1 (di-handle terpisah untuk case
+    // ini)
+    if (line_sensor_entry_armed && button1_pressed && !is_calibrating) {
+      current_test_state = TEST_STATE_PID_LINE;
+      test_state_timer = now;
+      test_phase = 0;
+      break; // Keluar dari frame ini dan masuk ke test selanjutnya
+    }
+
+    long raw_adc[16] = {0};
+    for (int i = 0; i < 16; i++) {
+      readLineSensorDigital(i); // Update internal raw & status digital secara
+                                // spesifik (pakai threshold array)
+      raw_adc[i] = line_sensor_raw[i];
+
+      // Update pembacaan Min & Max saat mode Kalibrasi AKTIF
+      if (is_calibrating) {
+        if (line_sensor_raw[i] > line_sensor_max[i]) {
+          line_sensor_max[i] = line_sensor_raw[i];
+        }
+        if (line_sensor_raw[i] < line_sensor_min[i]) {
+          line_sensor_min[i] = line_sensor_raw[i];
+        }
+      }
+    }
+
+    uint8_t disp_group = ((now - test_state_timer) / 1000) % 4;
+    uint8_t ch_start = disp_group * 4;
+
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+
+    // Tampilkan label berbeda di OLED saat mode kalibrasi jalan
+    if (is_calibrating) {
+      display.printf("CALIBRATING... (BTN4)");
+    } else {
+      display.printf("RAW CH%u-%u", ch_start, ch_start + 3);
+    }
+
+    display.setCursor(0, 8);
+    display.printf("%u:%u %u:%u", ch_start, line_sensor_raw[ch_start],
+                   ch_start + 1, line_sensor_raw[ch_start + 1]);
+
+    display.setCursor(0, 16);
+    display.printf("%u:%u %u:%u", ch_start + 2, line_sensor_raw[ch_start + 2],
+                   ch_start + 3, line_sensor_raw[ch_start + 3]);
+
+    const int bar_y = 24;
+    const int bar_h = 39;
+    const int slot_w = 8;
+    const int box_w = 7;
+
+    for (int i = 0; i < 16; i++) {
+      int x = i * slot_w;
+      display.drawRect(x, bar_y, box_w, bar_h, SSD1306_WHITE);
+      if (line_sensor_digital[i]) {
+        display.fillRect(x + 1, bar_y + 1, box_w - 2, bar_h - 2, SSD1306_WHITE);
+      }
+    }
+
+    display.display();
+
+    static uint32_t last_ls_serial_ms = 0;
+    if (now - last_ls_serial_ms >= 100) {
+      last_ls_serial_ms = now;
+      // Dump semua channel 0-15 dalam satu baris agar cepat dibaca.
+      Serial.printf("[LINE] %s RAW:", is_calibrating ? "CAL:ON" : "CAL:OFF");
+      for (int i = 0; i < 16; i++) {
+        Serial.printf(" %d:%u", i, line_sensor_raw[i]);
+      }
+      Serial.print(" DIG:");
+      for (int i = 0; i < 16; i++) {
+        Serial.print(line_sensor_digital[i] ? '1' : '0');
+      }
+      Serial.println();
+    }
+
+    break;
+  }
+
+  case TEST_STATE_PID_LINE: {
+    if (test_phase == 0) {
+      pid_menu_active = false;
+      pid_menu_item = 0;
+      pid_enabled = false;
+      pid_last_update_ms = 0;
+      syncPIDController();
+      resetPID(&pid_line_following);
+      test_state_timer = now;
+      test_phase = 1;
+      stopMotors();
+    }
+
+    if (button4_pressed) {
+      if (!pid_menu_active) {
+        pid_menu_active = true;
+        pid_menu_item = 0;
+      } else if (pid_menu_item < 3) {
+        pid_menu_item++;
+      } else {
+        pid_menu_active = false;
+      }
+    }
+
+    if (pid_menu_active) {
+
+      const float kp_step = 0.01f;
+      const float ki_step = 0.0005f;
+      const float kd_step = 0.01f;
+      const float base_step = 5.0f;
+
+      if (button1_pressed) {
+        switch (pid_menu_item) {
+        case 0:
+          pid_current_Kp -= kp_step;
+          if (pid_current_Kp < 0.0f) {
+            pid_current_Kp = 0.0f;
+          }
+          break;
+        case 1:
+          pid_current_Ki -= ki_step;
+          if (pid_current_Ki < 0.0f) {
+            pid_current_Ki = 0.0f;
+          }
+          break;
+        case 2:
+          pid_current_Kd -= kd_step;
+          if (pid_current_Kd < 0.0f) {
+            pid_current_Kd = 0.0f;
+          }
+          break;
+        case 3:
+          pid_base_speed -= base_step;
+          if (pid_base_speed < 0.0f) {
+            pid_base_speed = 0.0f;
+          }
+          break;
+        }
+        syncPIDController();
+        savePIDSettings();
+      }
+
+      if (button2_pressed) {
+        switch (pid_menu_item) {
+        case 0:
+          pid_current_Kp += kp_step;
+          if (pid_current_Kp > 10.0f) {
+            pid_current_Kp = 10.0f;
+          }
+          break;
+        case 1:
+          pid_current_Ki += ki_step;
+          if (pid_current_Ki > 1.0f) {
+            pid_current_Ki = 1.0f;
+          }
+          break;
+        case 2:
+          pid_current_Kd += kd_step;
+          if (pid_current_Kd > 10.0f) {
+            pid_current_Kd = 10.0f;
+          }
+          break;
+        case 3:
+          pid_base_speed += base_step;
+          if (pid_base_speed > 255.0f) {
+            pid_base_speed = 255.0f;
+          }
+          break;
+        }
+        syncPIDController();
+        savePIDSettings();
+      }
+    }
+
+    if (button3_pressed) {
+      pid_enabled = !pid_enabled;
+      if (pid_enabled) {
+        resetPID(&pid_line_following);
+        pid_last_update_ms = now;
+      } else {
+        stopMotors();
+        pid_last_update_ms = 0;
+      }
+    }
+
+    if (!pid_menu_active && !pid_enabled) {
+      if (button1_pressed) {
+        current_test_state = TEST_STATE_WEB_GAMEPAD;
+        test_state_timer = now;
+        test_phase = 0;
+        break;
+      }
+      if (button2_pressed) {
+        current_test_state = TEST_STATE_LINE_SENSOR;
+        test_state_timer = now;
+        test_phase = 0;
+        break;
+      }
+    }
+
+    if (pid_enabled) {
+      followLinePID(pid_base_speed, pid_output_limit);
+    } else {
+      stopMotors();
+      calculateLinePosition();
+    }
+
+    if (pid_menu_active) {
+      char l2[32];
+      char l3[32];
+      char l4[32];
+      const char *selected = "KP";
+      float value = pid_current_Kp;
+      if (pid_menu_item == 1) {
+        selected = "KI";
+        value = pid_current_Ki;
+      } else if (pid_menu_item == 2) {
+        selected = "KD";
+        value = pid_current_Kd;
+      } else if (pid_menu_item == 3) {
+        selected = "SPD";
+        value = pid_base_speed;
+      }
+
+      snprintf(l2, sizeof(l2), "SEL:%s VAL:%.3f", selected, value);
+      snprintf(l3, sizeof(l3), "KP:%.2f KI:%.3f", pid_current_Kp,
+               pid_current_Ki);
+      snprintf(l4, sizeof(l4), "KD:%.2f SPD:%.0f", pid_current_Kd,
+               pid_base_speed);
+      displayOLED("PID MENU", l2, l3, l4);
+    } else {
+      long raw_adc[16] = {0};
+      for (int i = 0; i < 16; i++) {
+        raw_adc[i] = line_sensor_raw[i];
+      }
+
+      uint8_t disp_group = ((now - test_state_timer) / 1000) % 4;
+      uint8_t ch_start = disp_group * 4;
+
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0, 0);
+      display.printf("PID %s  SP:%.0f", pid_enabled ? "RUN" : "STOP",
+                     pid_base_speed);
+
+      display.setCursor(0, 8);
+      display.printf("POS:%.2f %s", pid_line_position,
+                     line_detected ? "LINE" : "LOST");
+
+      display.setCursor(0, 16);
+      display.printf("%u:%u %u:%u", ch_start, raw_adc[ch_start], ch_start + 1,
+                     raw_adc[ch_start + 1]);
+
+      display.setCursor(0, 24);
+      display.printf("%u:%u %u:%u", ch_start + 2, raw_adc[ch_start + 2],
+                     ch_start + 3, raw_adc[ch_start + 3]);
+
+      const int bar_y = 32;
+      const int bar_h = 31;
+      const int slot_w = 8;
+      const int box_w = 7;
+
+      for (int i = 0; i < 16; i++) {
+        int x = i * slot_w;
+        display.drawRect(x, bar_y, box_w, bar_h, SSD1306_WHITE);
+        if (line_sensor_digital[i]) {
+          display.fillRect(x + 1, bar_y + 1, box_w - 2, bar_h - 2,
+                           SSD1306_WHITE);
+        }
+      }
+
+      display.display();
+
+      static uint32_t last_pid_serial_ms = 0;
+      if (now - last_pid_serial_ms >= 100) {
+        last_pid_serial_ms = now;
+        Serial.printf("[PID] %s POS:%.2f KP:%.3f KI:%.3f KD:%.3f SPD:%.0f\n",
+                      pid_enabled ? "RUN" : "STOP", pid_line_position,
+                      pid_current_Kp, pid_current_Ki, pid_current_Kd,
+                      pid_base_speed);
+      }
+    }
+
+    break;
+  }
+
+  case TEST_STATE_WEB_GAMEPAD: {
+    if (test_phase == 0) {
+      webGamepadStopMotors();
+      webGamepadWifiConfigured = false;
+      webGamepadWifiConnected = false;
+      webGamepadLastRetryMs = now;
+      snprintf(webGamepadWifiText, sizeof(webGamepadWifiText), "idle");
+      snprintf(webGamepadIpText, sizeof(webGamepadIpText), "--");
+      snprintf(webGamepadCommandText, sizeof(webGamepadCommandText), "stop");
+      test_state_timer = now;
+      test_phase = 1;
+    }
+
+    webGamepadEnsureWifiConnected(now);
+
+    if (WiFi.status() == WL_CONNECTED) {
+      if (webGamepadServerStarted) {
+        webGamepadServer.handleClient();
+      }
+    }
+
+    if (webGamepadWifiConnected) {
+      char ipLine[32];
+      char wifiLine[32];
+      char cmdLine[32];
+      snprintf(ipLine, sizeof(ipLine), "IP: %s", webGamepadIpText);
+      snprintf(wifiLine, sizeof(wifiLine), "WIFI: %s", webGamepadWifiText);
+      snprintf(cmdLine, sizeof(cmdLine), "CMD: %s", webGamepadCommandText);
+      displayOLED("TEST: WEB GAMEPAD", ipLine, wifiLine, cmdLine);
+    } else {
+      char wifiLine[32];
+      snprintf(wifiLine, sizeof(wifiLine), "WIFI: %s", webGamepadWifiText);
+      displayOLED("TEST: WEB GAMEPAD", wifiLine, "Open IP after WiFi",
+                  "BTN1=Done BTN2=Prev");
+    }
+    break;
+  }
+
+  case TEST_STATE_DONE: {
+    displayOLED("ALL TESTS DONE", "", "BTN1=Restart", "BTN2=Prev");
+
+    if (button1_pressed) {
+      test_running = 0;
+      current_test_state = TEST_STATE_IDLE;
+    }
+    break;
+  }
+
+  default:
+    displayOLED("ERROR", "Unknown state", "", "");
+    break;
+  }
+}

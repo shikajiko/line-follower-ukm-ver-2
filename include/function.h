@@ -1,0 +1,93 @@
+#ifndef FUNCTION_H
+#define FUNCTION_H
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <stdint.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define SCREEN_ADDRESS 0x3C
+
+// Global OLED display object
+extern Adafruit_SSD1306 display;
+
+// ============ INIT FUNCTIONS ============
+
+void initOLED();
+void initBuzzer();
+void initButton();
+void initEncoder();
+void initMotor();
+void initADC();
+void initMUX();
+void initGY25();
+void initServo();
+void setupPCNT();
+void initpower();
+void power(bool state);
+
+// ============ TEST STATE MACHINE ============
+
+void runTestSequence();
+void runSingleSensorCheck();
+
+// ============ TEST MODULE FUNCTIONS ============
+
+// GY25 IMU
+int16_t readGY25Yaw();
+
+// Encoder PCNT
+int32_t readEncoder(uint8_t encoderNum);
+void resetEncoder(uint8_t encoderNum);
+
+// Servo control (PWM1, PWM2)
+void setServo(uint8_t servoNum, uint16_t pulseUs);
+
+// Motor control (IN + shared enable)
+void setMotor(uint8_t motorNum, int16_t speed); // -255 to +255
+void stopMotors();
+
+// Line sensor 16 channels via MUX+ADC
+uint16_t readLineSensor(uint8_t channel); // raw ADC value
+// Menggunakan threshold internal yang bisa dikalibrasi
+uint8_t readLineSensorDigital(uint8_t channel); // binary ON/OFF
+
+// Utility display/serial
+void displayOLED(const char *line1, const char *line2, const char *line3,
+                 const char *line4);
+void printSerial(const char *msg);
+void pollButtons();
+
+// ============ PID CONTROL SYSTEM ============
+
+// PID controller structure
+typedef struct {
+  float Kp;           // Proportional gain
+  float Ki;           // Integral gain
+  float Kd;           // Derivative gain
+  float integral;     // Integral accumulator
+  float last_error;   // Previous error for derivative calculation
+  float integral_limit; // Anti-windup limit for integral term
+  float output_limit;  // Maximum output value
+} PIDController;
+
+// Line following PID control
+void initPIDController(PIDController *pid, float Kp, float Ki, float Kd,
+                      float integral_limit, float output_limit);
+float calculatePID(PIDController *pid, float setpoint, float current_value, float dt);
+void resetPID(PIDController *pid);
+
+// Line following functions
+float calculateLinePosition();
+void followLinePID(float base_speed, float max_speed_diff);
+void setPIDTuning(float Kp, float Ki, float Kd);
+void calibrateLineSensorsAuto();
+bool isLineDetected();
+
+// PID debug and monitoring
+void printPIDDebug();
+void resetPIDValues();
+
+#endif
