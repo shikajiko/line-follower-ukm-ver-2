@@ -67,7 +67,7 @@ void loop() {
   pollButtons();
 
   // Run test sequence state machine
-  runTestSequence();
+  // runTestSequence();
 
   // Small delay to prevent overwhelming the CPU
   delay(50);

@@ -9,9 +9,17 @@
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 #define SCREEN_ADDRESS 0x3C
-
+#define LIMIT_BATTERY 11.1f
 // Global OLED display object
 extern Adafruit_SSD1306 display;
+
+// Default PID values
+
+#define DEFAULT_KP 0.2f
+#define DEFAULT_KI 0.f
+#define DEFAULT_KD 1.f
+#define DEFAULT_PID_LIMIT 120.f
+#define DEFAULT_PID_BASE_SPEED 140.f
 
 // ============ INIT FUNCTIONS ============
 
@@ -59,6 +67,9 @@ void displayOLED(const char *line1, const char *line2, const char *line3,
                  const char *line4);
 void printSerial(const char *msg);
 void pollButtons();
+
+float readBatteryVoltage();
+void checkBatteryAlarm();
 
 // ============ PID CONTROL SYSTEM ============
 

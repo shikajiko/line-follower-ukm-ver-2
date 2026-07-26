@@ -16,6 +16,14 @@
 #define WIFI_PASSWORD "12345678"
 #endif
 
+#define BATTERY_CHECK_INTERVAL_MS 500u   // how often to sample
+#define BATTERY_LOW_CONFIRM_MS 3000u     // must stay low this long (avoids
+                                          // false trip from voltage sag under
+                                          // motor load)
+#define BATTERY_SAMPLES 8
+#define BATTERY_ALARM_TOGGLE_MS 120u     // fast pulse reads as more urgent
+                                          // than a steady tone
+
 // ============ OLED DISPLAY OBJECT ============
 // Adafruit_SSD1306 display(width, height, &Wire, reset_pin);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -23,9 +31,9 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // ============ GLOBAL VARIABLES ============
 
 // GY25 UART communication
-int16_t gy25_yaw = 0;   // x100 degrees
-int16_t gy25_pitch = 0; // x100 degrees
-int16_t gy25_roll = 0;  // x100 degrees
+extern int16_t gy25_yaw = 0;   // x100 degrees
+extern int16_t gy25_pitch = 0; // x100 degrees
+extern int16_t gy25_roll = 0;  // x100 degrees
 uint32_t gy25_last_read = 0;
 bool gy25_timeout = false;
 
@@ -41,12 +49,12 @@ static uint32_t pid_last_update_ms = 0;
 static Preferences pid_preferences;
 
 // PID parameters (adjustable during runtime)
-float pid_current_Kp = 0.8f;
-float pid_current_Ki = 0.001f;
-float pid_current_Kd = 0.2f;
+float pid_current_Kp = DEFAULT_KP;
+float pid_current_Ki = DEFAULT_KI;
+float pid_current_Kd = DEFAULT_KD;
 float pid_integral_limit = 100.0f;
-float pid_output_limit = 120.0f;
-float pid_base_speed = 140.0f;
+float pid_output_limit = DEFAULT_PID_LIMIT;
+float pid_base_speed = DEFAULT_PID_BASE_SPEED;
 
 // Line position calculation
 uint32_t line_position_last_update = 0;
@@ -62,10 +70,10 @@ int32_t enc1_last_count = 0;
 int32_t enc2_last_count = 0;
 
 // Button state tracking
-int button1_last = BUTTON_RELEASED;
-int button2_last = BUTTON_RELEASED;
-int button3_last = BUTTON_RELEASED;
-int button4_last = BUTTON_RELEASED;
+extern int button1_last = BUTTON_RELEASED;
+extern int button2_last = BUTTON_RELEASED;
+extern int button3_last = BUTTON_RELEASED;
+extern int button4_last = BUTTON_RELEASED;
 uint32_t button_debounce_time = 50;
 uint32_t button1_press_time = 0;
 uint32_t button2_press_time = 0;
@@ -83,8 +91,8 @@ uint16_t servo1_pulse = 1500;
 uint16_t servo2_pulse = 1500;
 
 // Motor state
-int16_t motor1_speed = 0;
-int16_t motor2_speed = 0;
+extern int16_t motor1_speed = 0;
+extern int16_t motor2_speed = 0;
 
 // Motor PWM (LEDC)
 #define MOTOR_PWM_FREQ 20000
@@ -96,6 +104,12 @@ int16_t motor2_speed = 0;
 
 // Some drivers need a short time enabled while direction inputs change.
 #define MOTOR_ENABLE_HOLD_MS 300u
+
+// battery check
+static uint32_t battery_last_check_ms = 0;
+static uint32_t battery_low_start_ms = 0;
+static bool battery_alarm_active = false;
+static float battery_last_voltage = 0.0f;
 
 // Line sensor
 #define LINE_SENSOR_THRESHOLD 3600
@@ -693,6 +707,9 @@ void setupPCNT() {
 }
 
 // ============ UTILITY FUNCTIONS ============
+float readBatteryVoltage() {
+    return (analogReadMilliVolts(VBAT_SENSE_PIN) * VBAT_SCALE) / 1000.0f;
+}
 
 void displayOLED(const char *line1, const char *line2, const char *line3,
                  const char *line4) {
@@ -876,6 +893,53 @@ void resetEncoder(uint8_t encoderNum) {
     pcnt_counter_resume(PCNT_UNIT_1);
     enc2_count = 0;
     enc2_last_count = 0;
+  }
+}
+
+// ==== BATTERY CHECK ====
+
+static float readBatteryVoltageAveraged() {
+  uint32_t mv_sum = 0;
+  for (uint8_t i = 0; i < BATTERY_SAMPLES; i++) {
+    mv_sum += analogReadMilliVolts(VBAT_SENSE_PIN);
+  }
+  const float mv = mv_sum / static_cast<float>(BATTERY_SAMPLES);
+  return (mv * VBAT_SCALE) / 1000.0f;
+}
+
+static void updateBatteryAlarmState(uint32_t now) {
+  if (now - battery_last_check_ms < BATTERY_CHECK_INTERVAL_MS) {
+    return;
+  }
+  battery_last_check_ms = now;
+  battery_last_voltage = readBatteryVoltageAveraged();
+
+  if (battery_last_voltage < LIMIT_BATTERY) {
+    if (battery_low_start_ms == 0) {
+      battery_low_start_ms = now;
+    }
+    if (!battery_alarm_active &&
+        (now - battery_low_start_ms) >= BATTERY_LOW_CONFIRM_MS) {
+      battery_alarm_active = true;
+      Serial.printf("[BATTERY] LOW confirmed (%.2fV < %.2fV). Alarm ON.\n",
+                    battery_last_voltage, LIMIT_BATTERY);
+    }
+  } else {
+    battery_low_start_ms = 0;
+    if (battery_alarm_active) {
+      battery_alarm_active = false;
+      Serial.println("[BATTERY] Voltage recovered. Alarm OFF.");
+    }
+  }
+}
+
+void checkBatteryAlarm() {
+  const uint32_t now = millis();
+  updateBatteryAlarmState(now);
+
+  if (battery_alarm_active && current_test_state != TEST_STATE_BUZZER) {
+    const bool on = ((now / BATTERY_ALARM_TOGGLE_MS) % 2) == 0;
+    digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
   }
 }
 
@@ -1176,7 +1240,7 @@ static void loadPIDSettings() {
 
 void resetPIDValues() {
   pid_current_Kp = 0.8f;
-  pid_current_Ki = 0.001f;
+  pid_current_Ki = 0.f;
   pid_current_Kd = 0.2f;
   pid_base_speed = 140.0f;
   syncPIDController();
@@ -1290,7 +1354,6 @@ void printPIDDebug() {
 }
 
 // ============ BUTTON POLLING ============
-
 void pollButtons() {
   uint32_t now = millis();
   // Serial.println("Polling buttons...");
