@@ -110,17 +110,34 @@ extern int button2_last;
 extern int button3_last;
 extern int button4_last;
 
+extern uint32_t button_debounce_time;
+extern uint32_t button1_press_time;
+extern uint32_t button2_press_time;
+extern uint32_t button3_press_time;
+extern uint32_t button4_press_time;
+extern bool button1_pressed;
+extern bool button2_pressed;
+extern bool button3_pressed;
+extern bool button4_pressed;
+
 // Motor state
 extern int16_t motor1_speed;
 extern int16_t motor2_speed;
 
+extern uint32_t button3_hold_start;
+extern bool button3_poweroff_latched;
+
 // Line sensor
 extern uint16_t line_sensor_raw[16];
 extern uint8_t line_sensor_digital[16];
+extern bool is_calibrating;
 
 // Line sensor calibration arrays
 extern uint16_t line_sensor_max[16];
 extern uint16_t line_sensor_min[16];
 extern uint16_t line_sensor_threshold[16];
+
+// Battery low display
+extern bool battery_owns_display;
 
 #endif

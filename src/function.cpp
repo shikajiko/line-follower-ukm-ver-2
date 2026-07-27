@@ -79,6 +79,7 @@ bool button1_pressed = false;
 bool button2_pressed = false;
 bool button3_pressed = false;
 bool button4_pressed = false;
+
 uint32_t button3_hold_start = 0;
 bool button3_poweroff_latched = false;
 
@@ -102,6 +103,8 @@ static uint32_t battery_last_check_ms = 0;
 static uint32_t battery_low_start_ms = 0;
 static bool battery_alarm_active = false;
 static float battery_last_voltage = 0.0f;
+static uint32_t battery_display_until = 0;
+bool battery_owns_display = false;
 
 bool is_calibrating = false;
 
@@ -917,13 +920,29 @@ static void updateBatteryAlarmState(uint32_t now) {
 }
 
 void checkBatteryAlarm() {
-  const uint32_t now = millis();
-  updateBatteryAlarmState(now);
+    const uint32_t now = millis();
+    updateBatteryAlarmState(now);
 
-  if (battery_alarm_active && current_test_state != TEST_STATE_BUZZER) {
-    const bool on = ((now / BATTERY_ALARM_TOGGLE_MS) % 2) == 0;
-    digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
-  }
+    if (battery_alarm_active && current_test_state != TEST_STATE_BUZZER) {
+        const bool on = ((now / BATTERY_ALARM_TOGGLE_MS) % 2) == 0;
+        digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+
+        if (!battery_owns_display) {
+            battery_owns_display = true;
+            battery_display_until = now + 1000;
+        }
+
+        if (battery_owns_display &&
+            (int32_t)(now - battery_display_until) >= 0) {
+            battery_owns_display = false;
+            battery_display_until = 0;
+        }
+        
+    } else {
+        digitalWrite(BUZZER_PIN, LOW);
+        battery_owns_display = false;
+        battery_display_until = 0;
+    }
 }
 
 // ============ SERVO MODULE ============

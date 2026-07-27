@@ -17,7 +17,7 @@
 // Ganti nilai BUTTON_ACTIVE_HIGH ini saja untuk troubleshooting:
 //   true  = tombol active-HIGH  -> idle LOW,  ditekan HIGH (pull-DOWN)
 //   false = tombol active-LOW   -> idle HIGH, ditekan LOW  (pull-UP)
-#define BUTTON_ACTIVE_HIGH true
+#define BUTTON_ACTIVE_HIGH false
 
 #if BUTTON_ACTIVE_HIGH
 #define BUTTON_PRESSED HIGH        // level saat tombol ditekan
