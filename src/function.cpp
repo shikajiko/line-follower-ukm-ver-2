@@ -31,30 +31,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // ============ GLOBAL VARIABLES ============
 
 // GY25 UART communication
-extern int16_t gy25_yaw = 0;   // x100 degrees
-extern int16_t gy25_pitch = 0; // x100 degrees
-extern int16_t gy25_roll = 0;  // x100 degrees
 uint32_t gy25_last_read = 0;
 bool gy25_timeout = false;
-
-// PID Controller for line following
-PIDController pid_line_following;
-bool pid_enabled = false;
-float pid_line_position = 0.0f;
-bool line_detected = false;
-static bool pid_settings_loaded = false;
-static bool pid_menu_active = false;
-static uint8_t pid_menu_item = 0;
-static uint32_t pid_last_update_ms = 0;
-static Preferences pid_preferences;
-
-// PID parameters (adjustable during runtime)
-float pid_current_Kp = DEFAULT_KP;
-float pid_current_Ki = DEFAULT_KI;
-float pid_current_Kd = DEFAULT_KD;
-float pid_integral_limit = 100.0f;
-float pid_output_limit = DEFAULT_PID_LIMIT;
-float pid_base_speed = DEFAULT_PID_BASE_SPEED;
 
 // Line position calculation
 uint32_t line_position_last_update = 0;
@@ -70,10 +48,6 @@ int32_t enc1_last_count = 0;
 int32_t enc2_last_count = 0;
 
 // Button state tracking
-extern int button1_last = BUTTON_RELEASED;
-extern int button2_last = BUTTON_RELEASED;
-extern int button3_last = BUTTON_RELEASED;
-extern int button4_last = BUTTON_RELEASED;
 uint32_t button_debounce_time = 50;
 uint32_t button1_press_time = 0;
 uint32_t button2_press_time = 0;
@@ -89,10 +63,6 @@ bool button3_poweroff_latched = false;
 // Servo position
 uint16_t servo1_pulse = 1500;
 uint16_t servo2_pulse = 1500;
-
-// Motor state
-extern int16_t motor1_speed = 0;
-extern int16_t motor2_speed = 0;
 
 // Motor PWM (LEDC)
 #define MOTOR_PWM_FREQ 20000
@@ -111,15 +81,6 @@ static uint32_t battery_low_start_ms = 0;
 static bool battery_alarm_active = false;
 static float battery_last_voltage = 0.0f;
 
-// Line sensor
-#define LINE_SENSOR_THRESHOLD 3600
-uint16_t line_sensor_raw[16];
-uint8_t line_sensor_digital[16];
-
-// Line sensor calibration arrays
-uint16_t line_sensor_max[16];
-uint16_t line_sensor_min[16];
-uint16_t line_sensor_threshold[16];
 bool is_calibrating = false;
 
 // VBAT sense calibration
@@ -1128,124 +1089,12 @@ uint8_t readLineSensorDigital(uint8_t channel) {
   return digital;
 }
 
-static void ensureLineSensorThresholdDefaults() {
+void ensureLineSensorThresholdDefaults() {
   for (int i = 0; i < 16; i++) {
     if (line_sensor_threshold[i] == 0) {
       line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
     }
   }
-}
-
-void initPIDController(PIDController *pid, float Kp, float Ki, float Kd,
-                       float integral_limit, float output_limit) {
-  if (pid == nullptr) {
-    return;
-  }
-
-  pid->Kp = Kp;
-  pid->Ki = Ki;
-  pid->Kd = Kd;
-  pid->integral = 0.0f;
-  pid->last_error = 0.0f;
-  pid->integral_limit = integral_limit;
-  pid->output_limit = output_limit;
-}
-
-float calculatePID(PIDController *pid, float setpoint, float current_value,
-                   float dt) {
-  if (pid == nullptr || dt <= 0.0f) {
-    return 0.0f;
-  }
-
-  const float error = setpoint - current_value;
-  pid->integral += error * dt;
-
-  if (pid->integral > pid->integral_limit) {
-    pid->integral = pid->integral_limit;
-  } else if (pid->integral < -pid->integral_limit) {
-    pid->integral = -pid->integral_limit;
-  }
-
-  const float derivative = (error - pid->last_error) / dt;
-  pid->last_error = error;
-
-  float output =
-      (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
-
-  if (output > pid->output_limit) {
-    output = pid->output_limit;
-  } else if (output < -pid->output_limit) {
-    output = -pid->output_limit;
-  }
-
-  return output;
-}
-
-void resetPID(PIDController *pid) {
-  if (pid == nullptr) {
-    return;
-  }
-
-  pid->integral = 0.0f;
-  pid->last_error = 0.0f;
-}
-
-static void syncPIDController() {
-  initPIDController(&pid_line_following, pid_current_Kp, pid_current_Ki,
-                    pid_current_Kd, pid_integral_limit, pid_output_limit);
-}
-
-static void savePIDSettings() {
-  pid_preferences.begin("pidline", false);
-  pid_preferences.putFloat("kp", pid_current_Kp);
-  pid_preferences.putFloat("ki", pid_current_Ki);
-  pid_preferences.putFloat("kd", pid_current_Kd);
-  pid_preferences.putFloat("base", pid_base_speed);
-  pid_preferences.end();
-}
-
-static void loadPIDSettings() {
-  if (pid_settings_loaded) {
-    return;
-  }
-
-  ensureLineSensorThresholdDefaults();
-
-  pid_preferences.begin("pidline", true);
-  pid_current_Kp = pid_preferences.getFloat("kp", pid_current_Kp);
-  pid_current_Ki = pid_preferences.getFloat("ki", pid_current_Ki);
-  pid_current_Kd = pid_preferences.getFloat("kd", pid_current_Kd);
-  pid_base_speed = pid_preferences.getFloat("base", pid_base_speed);
-  pid_preferences.end();
-
-  if (pid_current_Kp < 0.0f) {
-    pid_current_Kp = 0.0f;
-  }
-  if (pid_current_Ki < 0.0f) {
-    pid_current_Ki = 0.0f;
-  }
-  if (pid_current_Kd < 0.0f) {
-    pid_current_Kd = 0.0f;
-  }
-  if (pid_base_speed < 0.0f) {
-    pid_base_speed = 0.0f;
-  } else if (pid_base_speed > 255.0f) {
-    pid_base_speed = 255.0f;
-  }
-
-  syncPIDController();
-  resetPID(&pid_line_following);
-  pid_settings_loaded = true;
-}
-
-void resetPIDValues() {
-  pid_current_Kp = 0.8f;
-  pid_current_Ki = 0.f;
-  pid_current_Kd = 0.2f;
-  pid_base_speed = 140.0f;
-  syncPIDController();
-  resetPID(&pid_line_following);
-  savePIDSettings();
 }
 
 void calibrateLineSensorsAuto() {
@@ -1259,90 +1108,6 @@ void calibrateLineSensorsAuto() {
           static_cast<uint16_t>((line_sensor_max[i] + line_sensor_min[i]) / 2);
     }
   }
-}
-
-float calculateLinePosition() {
-  ensureLineSensorThresholdDefaults();
-
-  float weighted_sum = 0.0f;
-  float weight_total = 0.0f;
-
-  for (int i = 0; i < 16; i++) {
-    const uint8_t active = readLineSensorDigital(i);
-    if (active) {
-      const float strength = static_cast<float>(line_sensor_raw[i]) -
-                             static_cast<float>(line_sensor_threshold[i]);
-      const float weight = (strength > 0.0f) ? strength : 1.0f;
-      weighted_sum += static_cast<float>(i) * weight;
-      weight_total += weight;
-    }
-  }
-
-  if (weight_total <= 0.0f) {
-    line_detected = false;
-    return pid_line_position;
-  }
-
-  line_detected = true;
-  pid_line_position = weighted_sum / weight_total;
-  return pid_line_position;
-}
-
-bool isLineDetected() { return line_detected; }
-
-void followLinePID(float base_speed, float max_speed_diff) {
-  if (!pid_enabled) {
-    stopMotors();
-    return;
-  }
-
-  if (base_speed < 0.0f) {
-    base_speed = 0.0f;
-  } else if (base_speed > 255.0f) {
-    base_speed = 255.0f;
-  }
-
-  if (max_speed_diff < 0.0f) {
-    max_speed_diff = 0.0f;
-  }
-
-  const uint32_t now = millis();
-  float dt = 0.02f;
-  if (pid_last_update_ms != 0) {
-    dt = (now - pid_last_update_ms) / 1000.0f;
-    if (dt <= 0.0f) {
-      dt = 0.02f;
-    }
-  }
-  pid_last_update_ms = now;
-
-  const float line_position = calculateLinePosition();
-  if (!line_detected) {
-    stopMotors();
-    resetPID(&pid_line_following);
-    return;
-  }
-
-  pid_line_following.output_limit = max_speed_diff;
-  const float correction =
-      calculatePID(&pid_line_following, 7.5f, line_position, dt);
-
-  int16_t left_speed = static_cast<int16_t>(base_speed - correction);
-  int16_t right_speed = static_cast<int16_t>(base_speed + correction);
-
-  if (left_speed > 255) {
-    left_speed = 255;
-  } else if (left_speed < -255) {
-    left_speed = -255;
-  }
-  if (right_speed > 255) {
-    right_speed = 255;
-  } else if (right_speed < -255) {
-    right_speed = -255;
-  }
-
-  setMotor(1, left_speed);
-  setMotor(2, right_speed);
 }
 
 void printPIDDebug() {
@@ -1990,208 +1755,208 @@ void runTestSequence() {
   }
 
   case TEST_STATE_PID_LINE: {
-    if (test_phase == 0) {
-      pid_menu_active = false;
-      pid_menu_item = 0;
-      pid_enabled = false;
-      pid_last_update_ms = 0;
-      syncPIDController();
-      resetPID(&pid_line_following);
-      test_state_timer = now;
-      test_phase = 1;
-      stopMotors();
-    }
+    // if (test_phase == 0) {
+    //   pid_menu_active = false;
+    //   pid_menu_item = 0;
+    //   pid_enabled = false;
+    //   pid_last_update_ms = 0;
+    //   syncPIDController();
+    //   resetPID(&pid_line_following);
+    //   test_state_timer = now;
+    //   test_phase = 1;
+    //   stopMotors();
+    // }
 
-    if (button4_pressed) {
-      if (!pid_menu_active) {
-        pid_menu_active = true;
-        pid_menu_item = 0;
-      } else if (pid_menu_item < 3) {
-        pid_menu_item++;
-      } else {
-        pid_menu_active = false;
-      }
-    }
+    // if (button4_pressed) {
+    //   if (!pid_menu_active) {
+    //     pid_menu_active = true;
+    //     pid_menu_item = 0;
+    //   } else if (pid_menu_item < 3) {
+    //     pid_menu_item++;
+    //   } else {
+    //     pid_menu_active = false;
+    //   }
+    // }
 
-    if (pid_menu_active) {
+    // if (pid_menu_active) {
 
-      const float kp_step = 0.01f;
-      const float ki_step = 0.0005f;
-      const float kd_step = 0.01f;
-      const float base_step = 5.0f;
+    //   const float kp_step = 0.01f;
+    //   const float ki_step = 0.0005f;
+    //   const float kd_step = 0.01f;
+    //   const float base_step = 5.0f;
 
-      if (button1_pressed) {
-        switch (pid_menu_item) {
-        case 0:
-          pid_current_Kp -= kp_step;
-          if (pid_current_Kp < 0.0f) {
-            pid_current_Kp = 0.0f;
-          }
-          break;
-        case 1:
-          pid_current_Ki -= ki_step;
-          if (pid_current_Ki < 0.0f) {
-            pid_current_Ki = 0.0f;
-          }
-          break;
-        case 2:
-          pid_current_Kd -= kd_step;
-          if (pid_current_Kd < 0.0f) {
-            pid_current_Kd = 0.0f;
-          }
-          break;
-        case 3:
-          pid_base_speed -= base_step;
-          if (pid_base_speed < 0.0f) {
-            pid_base_speed = 0.0f;
-          }
-          break;
-        }
-        syncPIDController();
-        savePIDSettings();
-      }
+    //   if (button1_pressed) {
+    //     switch (pid_menu_item) {
+    //     case 0:
+    //       pid_current_Kp -= kp_step;
+    //       if (pid_current_Kp < 0.0f) {
+    //         pid_current_Kp = 0.0f;
+    //       }
+    //       break;
+    //     case 1:
+    //       pid_current_Ki -= ki_step;
+    //       if (pid_current_Ki < 0.0f) {
+    //         pid_current_Ki = 0.0f;
+    //       }
+    //       break;
+    //     case 2:
+    //       pid_current_Kd -= kd_step;
+    //       if (pid_current_Kd < 0.0f) {
+    //         pid_current_Kd = 0.0f;
+    //       }
+    //       break;
+    //     case 3:
+    //       pid_base_speed -= base_step;
+    //       if (pid_base_speed < 0.0f) {
+    //         pid_base_speed = 0.0f;
+    //       }
+    //       break;
+    //     }
+    //     syncPIDController();
+    //     savePIDSettings();
+    //   }
 
-      if (button2_pressed) {
-        switch (pid_menu_item) {
-        case 0:
-          pid_current_Kp += kp_step;
-          if (pid_current_Kp > 10.0f) {
-            pid_current_Kp = 10.0f;
-          }
-          break;
-        case 1:
-          pid_current_Ki += ki_step;
-          if (pid_current_Ki > 1.0f) {
-            pid_current_Ki = 1.0f;
-          }
-          break;
-        case 2:
-          pid_current_Kd += kd_step;
-          if (pid_current_Kd > 10.0f) {
-            pid_current_Kd = 10.0f;
-          }
-          break;
-        case 3:
-          pid_base_speed += base_step;
-          if (pid_base_speed > 255.0f) {
-            pid_base_speed = 255.0f;
-          }
-          break;
-        }
-        syncPIDController();
-        savePIDSettings();
-      }
-    }
+    //   if (button2_pressed) {
+    //     switch (pid_menu_item) {
+    //     case 0:
+    //       pid_current_Kp += kp_step;
+    //       if (pid_current_Kp > 10.0f) {
+    //         pid_current_Kp = 10.0f;
+    //       }
+    //       break;
+    //     case 1:
+    //       pid_current_Ki += ki_step;
+    //       if (pid_current_Ki > 1.0f) {
+    //         pid_current_Ki = 1.0f;
+    //       }
+    //       break;
+    //     case 2:
+    //       pid_current_Kd += kd_step;
+    //       if (pid_current_Kd > 10.0f) {
+    //         pid_current_Kd = 10.0f;
+    //       }
+    //       break;
+    //     case 3:
+    //       pid_base_speed += base_step;
+    //       if (pid_base_speed > 255.0f) {
+    //         pid_base_speed = 255.0f;
+    //       }
+    //       break;
+    //     }
+    //     syncPIDController();
+    //     savePIDSettings();
+    //   }
+    // }
 
-    if (button3_pressed) {
-      pid_enabled = !pid_enabled;
-      if (pid_enabled) {
-        resetPID(&pid_line_following);
-        pid_last_update_ms = now;
-      } else {
-        stopMotors();
-        pid_last_update_ms = 0;
-      }
-    }
+    // if (button3_pressed) {
+    //   pid_enabled = !pid_enabled;
+    //   if (pid_enabled) {
+    //     resetPID(&pid_line_following);
+    //     pid_last_update_ms = now;
+    //   } else {
+    //     stopMotors();
+    //     pid_last_update_ms = 0;
+    //   }
+    // }
 
-    if (!pid_menu_active && !pid_enabled) {
-      if (button1_pressed) {
-        current_test_state = TEST_STATE_WEB_GAMEPAD;
-        test_state_timer = now;
-        test_phase = 0;
-        break;
-      }
-      if (button2_pressed) {
-        current_test_state = TEST_STATE_LINE_SENSOR;
-        test_state_timer = now;
-        test_phase = 0;
-        break;
-      }
-    }
+    // if (!pid_menu_active && !pid_enabled) {
+    //   if (button1_pressed) {
+    //     current_test_state = TEST_STATE_WEB_GAMEPAD;
+    //     test_state_timer = now;
+    //     test_phase = 0;
+    //     break;
+    //   }
+    //   if (button2_pressed) {
+    //     current_test_state = TEST_STATE_LINE_SENSOR;
+    //     test_state_timer = now;
+    //     test_phase = 0;
+    //     break;
+    //   }
+    // }
 
-    if (pid_enabled) {
-      followLinePID(pid_base_speed, pid_output_limit);
-    } else {
-      stopMotors();
-      calculateLinePosition();
-    }
+    // if (pid_enabled) {
+    //   followLinePID(pid_base_speed, pid_output_limit);
+    // } else {
+    //   stopMotors();
+    //   calculateLinePosition();
+    // }
 
-    if (pid_menu_active) {
-      char l2[32];
-      char l3[32];
-      char l4[32];
-      const char *selected = "KP";
-      float value = pid_current_Kp;
-      if (pid_menu_item == 1) {
-        selected = "KI";
-        value = pid_current_Ki;
-      } else if (pid_menu_item == 2) {
-        selected = "KD";
-        value = pid_current_Kd;
-      } else if (pid_menu_item == 3) {
-        selected = "SPD";
-        value = pid_base_speed;
-      }
+    // if (pid_menu_active) {
+    //   char l2[32];
+    //   char l3[32];
+    //   char l4[32];
+    //   const char *selected = "KP";
+    //   float value = pid_current_Kp;
+    //   if (pid_menu_item == 1) {
+    //     selected = "KI";
+    //     value = pid_current_Ki;
+    //   } else if (pid_menu_item == 2) {
+    //     selected = "KD";
+    //     value = pid_current_Kd;
+    //   } else if (pid_menu_item == 3) {
+    //     selected = "SPD";
+    //     value = pid_base_speed;
+    //   }
 
-      snprintf(l2, sizeof(l2), "SEL:%s VAL:%.3f", selected, value);
-      snprintf(l3, sizeof(l3), "KP:%.2f KI:%.3f", pid_current_Kp,
-               pid_current_Ki);
-      snprintf(l4, sizeof(l4), "KD:%.2f SPD:%.0f", pid_current_Kd,
-               pid_base_speed);
-      displayOLED("PID MENU", l2, l3, l4);
-    } else {
-      long raw_adc[16] = {0};
-      for (int i = 0; i < 16; i++) {
-        raw_adc[i] = line_sensor_raw[i];
-      }
+    //   snprintf(l2, sizeof(l2), "SEL:%s VAL:%.3f", selected, value);
+    //   snprintf(l3, sizeof(l3), "KP:%.2f KI:%.3f", pid_current_Kp,
+    //            pid_current_Ki);
+    //   snprintf(l4, sizeof(l4), "KD:%.2f SPD:%.0f", pid_current_Kd,
+    //            pid_base_speed);
+    //   displayOLED("PID MENU", l2, l3, l4);
+    // } else {
+    //   long raw_adc[16] = {0};
+    //   for (int i = 0; i < 16; i++) {
+    //     raw_adc[i] = line_sensor_raw[i];
+    //   }
 
-      uint8_t disp_group = ((now - test_state_timer) / 1000) % 4;
-      uint8_t ch_start = disp_group * 4;
+    //   uint8_t disp_group = ((now - test_state_timer) / 1000) % 4;
+    //   uint8_t ch_start = disp_group * 4;
 
-      display.clearDisplay();
-      display.setTextSize(1);
-      display.setTextColor(SSD1306_WHITE);
-      display.setCursor(0, 0);
-      display.printf("PID %s  SP:%.0f", pid_enabled ? "RUN" : "STOP",
-                     pid_base_speed);
+    //   display.clearDisplay();
+    //   display.setTextSize(1);
+    //   display.setTextColor(SSD1306_WHITE);
+    //   display.setCursor(0, 0);
+    //   display.printf("PID %s  SP:%.0f", pid_enabled ? "RUN" : "STOP",
+    //                  pid_base_speed);
 
-      display.setCursor(0, 8);
-      display.printf("POS:%.2f %s", pid_line_position,
-                     line_detected ? "LINE" : "LOST");
+    //   display.setCursor(0, 8);
+    //   display.printf("POS:%.2f %s", pid_line_position,
+    //                  line_detected ? "LINE" : "LOST");
 
-      display.setCursor(0, 16);
-      display.printf("%u:%u %u:%u", ch_start, raw_adc[ch_start], ch_start + 1,
-                     raw_adc[ch_start + 1]);
+    //   display.setCursor(0, 16);
+    //   display.printf("%u:%u %u:%u", ch_start, raw_adc[ch_start], ch_start + 1,
+    //                  raw_adc[ch_start + 1]);
 
-      display.setCursor(0, 24);
-      display.printf("%u:%u %u:%u", ch_start + 2, raw_adc[ch_start + 2],
-                     ch_start + 3, raw_adc[ch_start + 3]);
+    //   display.setCursor(0, 24);
+    //   display.printf("%u:%u %u:%u", ch_start + 2, raw_adc[ch_start + 2],
+    //                  ch_start + 3, raw_adc[ch_start + 3]);
 
-      const int bar_y = 32;
-      const int bar_h = 31;
-      const int slot_w = 8;
-      const int box_w = 7;
+    //   const int bar_y = 32;
+    //   const int bar_h = 31;
+    //   const int slot_w = 8;
+    //   const int box_w = 7;
 
-      for (int i = 0; i < 16; i++) {
-        int x = i * slot_w;
-        display.drawRect(x, bar_y, box_w, bar_h, SSD1306_WHITE);
-        if (line_sensor_digital[i]) {
-          display.fillRect(x + 1, bar_y + 1, box_w - 2, bar_h - 2,
-                           SSD1306_WHITE);
-        }
-      }
+    //   for (int i = 0; i < 16; i++) {
+    //     int x = i * slot_w;
+    //     display.drawRect(x, bar_y, box_w, bar_h, SSD1306_WHITE);
+    //     if (line_sensor_digital[i]) {
+    //       display.fillRect(x + 1, bar_y + 1, box_w - 2, bar_h - 2,
+    //                        SSD1306_WHITE);
+    //     }
+    //   }
 
-      display.display();
+    //   display.display();
 
-      static uint32_t last_pid_serial_ms = 0;
-      if (now - last_pid_serial_ms >= 100) {
-        last_pid_serial_ms = now;
-        Serial.printf("[PID] %s POS:%.2f KP:%.3f KI:%.3f KD:%.3f SPD:%.0f\n",
-                      pid_enabled ? "RUN" : "STOP", pid_line_position,
-                      pid_current_Kp, pid_current_Ki, pid_current_Kd,
-                      pid_base_speed);
-      }
-    }
+    //   static uint32_t last_pid_serial_ms = 0;
+    //   if (now - last_pid_serial_ms >= 100) {
+    //     last_pid_serial_ms = now;
+    //     Serial.printf("[PID] %s POS:%.2f KP:%.3f KI:%.3f KD:%.3f SPD:%.0f\n",
+    //                   pid_enabled ? "RUN" : "STOP", pid_line_position,
+    //                   pid_current_Kp, pid_current_Ki, pid_current_Kd,
+    //                   pid_base_speed);
+    //   }
+    // }
 
     break;
   }

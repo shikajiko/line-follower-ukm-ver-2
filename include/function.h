@@ -14,12 +14,14 @@
 extern Adafruit_SSD1306 display;
 
 // Default PID values
-
 #define DEFAULT_KP 0.2f
 #define DEFAULT_KI 0.f
 #define DEFAULT_KD 1.f
 #define DEFAULT_PID_LIMIT 120.f
 #define DEFAULT_PID_BASE_SPEED 140.f
+
+// Line sensor
+#define LINE_SENSOR_THRESHOLD 3600
 
 // ============ INIT FUNCTIONS ============
 
@@ -84,21 +86,35 @@ typedef struct {
   float output_limit;  // Maximum output value
 } PIDController;
 
-// Line following PID control
-void initPIDController(PIDController *pid, float Kp, float Ki, float Kd,
-                      float integral_limit, float output_limit);
-float calculatePID(PIDController *pid, float setpoint, float current_value, float dt);
-void resetPID(PIDController *pid);
-
-// Line following functions
-float calculateLinePosition();
-void followLinePID(float base_speed, float max_speed_diff);
-void setPIDTuning(float Kp, float Ki, float Kd);
 void calibrateLineSensorsAuto();
 bool isLineDetected();
+void ensureLineSensorThresholdDefaults();
 
 // PID debug and monitoring
 void printPIDDebug();
 void resetPIDValues();
+
+extern int16_t gy25_yaw = 0;   // x100 degrees
+extern int16_t gy25_pitch = 0; // x100 degrees
+extern int16_t gy25_roll = 0;  // x100 degrees
+
+// Button state
+extern int button1_last = BUTTON_RELEASED;
+extern int button2_last = BUTTON_RELEASED;
+extern int button3_last = BUTTON_RELEASED;
+extern int button4_last = BUTTON_RELEASED;
+
+// Motor state
+extern int16_t motor1_speed = 0;
+extern int16_t motor2_speed = 0;
+
+// Line sensor
+extern uint16_t line_sensor_raw[16];
+extern uint8_t line_sensor_digital[16];
+
+// Line sensor calibration arrays
+extern uint16_t line_sensor_max[16];
+extern uint16_t line_sensor_min[16];
+extern uint16_t line_sensor_threshold[16];
 
 #endif
