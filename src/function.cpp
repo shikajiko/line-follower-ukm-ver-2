@@ -1,4 +1,5 @@
 #include "function.h"
+#include "locomotion.h"
 #include "IO.h"
 #include <Arduino.h>
 #include <Preferences.h>
@@ -29,6 +30,27 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // ============ GLOBAL VARIABLES ============
+
+// ---- Definitions for externs declared in function.h ----
+// (Declared `extern` in function.h so other translation units can see
+// them; defined exactly once here, in this file.)
+int16_t gy25_yaw = 0;   // x100 degrees
+int16_t gy25_pitch = 0; // x100 degrees
+int16_t gy25_roll = 0;  // x100 degrees
+
+int button1_last = BUTTON_RELEASED;
+int button2_last = BUTTON_RELEASED;
+int button3_last = BUTTON_RELEASED;
+int button4_last = BUTTON_RELEASED;
+
+int16_t motor1_speed = 0;
+int16_t motor2_speed = 0;
+
+uint16_t line_sensor_raw[16] = {0};
+uint8_t line_sensor_digital[16] = {0};
+uint16_t line_sensor_max[16] = {0};
+uint16_t line_sensor_min[16] = {0};
+uint16_t line_sensor_threshold[16] = {0};
 
 // GY25 UART communication
 uint32_t gy25_last_read = 0;
@@ -1251,9 +1273,10 @@ void runSingleSensorCheck() {
 void runTestSequence() {
   uint32_t now = millis();
 
-  if (!pid_settings_loaded) {
-    loadPIDSettings();
-  }
+  // loadPIDSettings() guards itself internally (safe/cheap to call every
+  // frame) — its "already loaded" flag has internal linkage in
+  // locomotion.cpp and isn't visible from this file.
+  loadPIDSettings();
 
   // Global safety action: hold BUTTON3 for >3s to cut system power
   int btn3_state = digitalRead(BUTTON3_PIN);
@@ -1755,209 +1778,7 @@ void runTestSequence() {
   }
 
   case TEST_STATE_PID_LINE: {
-    // if (test_phase == 0) {
-    //   pid_menu_active = false;
-    //   pid_menu_item = 0;
-    //   pid_enabled = false;
-    //   pid_last_update_ms = 0;
-    //   syncPIDController();
-    //   resetPID(&pid_line_following);
-    //   test_state_timer = now;
-    //   test_phase = 1;
-    //   stopMotors();
-    // }
-
-    // if (button4_pressed) {
-    //   if (!pid_menu_active) {
-    //     pid_menu_active = true;
-    //     pid_menu_item = 0;
-    //   } else if (pid_menu_item < 3) {
-    //     pid_menu_item++;
-    //   } else {
-    //     pid_menu_active = false;
-    //   }
-    // }
-
-    // if (pid_menu_active) {
-
-    //   const float kp_step = 0.01f;
-    //   const float ki_step = 0.0005f;
-    //   const float kd_step = 0.01f;
-    //   const float base_step = 5.0f;
-
-    //   if (button1_pressed) {
-    //     switch (pid_menu_item) {
-    //     case 0:
-    //       pid_current_Kp -= kp_step;
-    //       if (pid_current_Kp < 0.0f) {
-    //         pid_current_Kp = 0.0f;
-    //       }
-    //       break;
-    //     case 1:
-    //       pid_current_Ki -= ki_step;
-    //       if (pid_current_Ki < 0.0f) {
-    //         pid_current_Ki = 0.0f;
-    //       }
-    //       break;
-    //     case 2:
-    //       pid_current_Kd -= kd_step;
-    //       if (pid_current_Kd < 0.0f) {
-    //         pid_current_Kd = 0.0f;
-    //       }
-    //       break;
-    //     case 3:
-    //       pid_base_speed -= base_step;
-    //       if (pid_base_speed < 0.0f) {
-    //         pid_base_speed = 0.0f;
-    //       }
-    //       break;
-    //     }
-    //     syncPIDController();
-    //     savePIDSettings();
-    //   }
-
-    //   if (button2_pressed) {
-    //     switch (pid_menu_item) {
-    //     case 0:
-    //       pid_current_Kp += kp_step;
-    //       if (pid_current_Kp > 10.0f) {
-    //         pid_current_Kp = 10.0f;
-    //       }
-    //       break;
-    //     case 1:
-    //       pid_current_Ki += ki_step;
-    //       if (pid_current_Ki > 1.0f) {
-    //         pid_current_Ki = 1.0f;
-    //       }
-    //       break;
-    //     case 2:
-    //       pid_current_Kd += kd_step;
-    //       if (pid_current_Kd > 10.0f) {
-    //         pid_current_Kd = 10.0f;
-    //       }
-    //       break;
-    //     case 3:
-    //       pid_base_speed += base_step;
-    //       if (pid_base_speed > 255.0f) {
-    //         pid_base_speed = 255.0f;
-    //       }
-    //       break;
-    //     }
-    //     syncPIDController();
-    //     savePIDSettings();
-    //   }
-    // }
-
-    // if (button3_pressed) {
-    //   pid_enabled = !pid_enabled;
-    //   if (pid_enabled) {
-    //     resetPID(&pid_line_following);
-    //     pid_last_update_ms = now;
-    //   } else {
-    //     stopMotors();
-    //     pid_last_update_ms = 0;
-    //   }
-    // }
-
-    // if (!pid_menu_active && !pid_enabled) {
-    //   if (button1_pressed) {
-    //     current_test_state = TEST_STATE_WEB_GAMEPAD;
-    //     test_state_timer = now;
-    //     test_phase = 0;
-    //     break;
-    //   }
-    //   if (button2_pressed) {
-    //     current_test_state = TEST_STATE_LINE_SENSOR;
-    //     test_state_timer = now;
-    //     test_phase = 0;
-    //     break;
-    //   }
-    // }
-
-    // if (pid_enabled) {
-    //   followLinePID(pid_base_speed, pid_output_limit);
-    // } else {
-    //   stopMotors();
-    //   calculateLinePosition();
-    // }
-
-    // if (pid_menu_active) {
-    //   char l2[32];
-    //   char l3[32];
-    //   char l4[32];
-    //   const char *selected = "KP";
-    //   float value = pid_current_Kp;
-    //   if (pid_menu_item == 1) {
-    //     selected = "KI";
-    //     value = pid_current_Ki;
-    //   } else if (pid_menu_item == 2) {
-    //     selected = "KD";
-    //     value = pid_current_Kd;
-    //   } else if (pid_menu_item == 3) {
-    //     selected = "SPD";
-    //     value = pid_base_speed;
-    //   }
-
-    //   snprintf(l2, sizeof(l2), "SEL:%s VAL:%.3f", selected, value);
-    //   snprintf(l3, sizeof(l3), "KP:%.2f KI:%.3f", pid_current_Kp,
-    //            pid_current_Ki);
-    //   snprintf(l4, sizeof(l4), "KD:%.2f SPD:%.0f", pid_current_Kd,
-    //            pid_base_speed);
-    //   displayOLED("PID MENU", l2, l3, l4);
-    // } else {
-    //   long raw_adc[16] = {0};
-    //   for (int i = 0; i < 16; i++) {
-    //     raw_adc[i] = line_sensor_raw[i];
-    //   }
-
-    //   uint8_t disp_group = ((now - test_state_timer) / 1000) % 4;
-    //   uint8_t ch_start = disp_group * 4;
-
-    //   display.clearDisplay();
-    //   display.setTextSize(1);
-    //   display.setTextColor(SSD1306_WHITE);
-    //   display.setCursor(0, 0);
-    //   display.printf("PID %s  SP:%.0f", pid_enabled ? "RUN" : "STOP",
-    //                  pid_base_speed);
-
-    //   display.setCursor(0, 8);
-    //   display.printf("POS:%.2f %s", pid_line_position,
-    //                  line_detected ? "LINE" : "LOST");
-
-    //   display.setCursor(0, 16);
-    //   display.printf("%u:%u %u:%u", ch_start, raw_adc[ch_start], ch_start + 1,
-    //                  raw_adc[ch_start + 1]);
-
-    //   display.setCursor(0, 24);
-    //   display.printf("%u:%u %u:%u", ch_start + 2, raw_adc[ch_start + 2],
-    //                  ch_start + 3, raw_adc[ch_start + 3]);
-
-    //   const int bar_y = 32;
-    //   const int bar_h = 31;
-    //   const int slot_w = 8;
-    //   const int box_w = 7;
-
-    //   for (int i = 0; i < 16; i++) {
-    //     int x = i * slot_w;
-    //     display.drawRect(x, bar_y, box_w, bar_h, SSD1306_WHITE);
-    //     if (line_sensor_digital[i]) {
-    //       display.fillRect(x + 1, bar_y + 1, box_w - 2, bar_h - 2,
-    //                        SSD1306_WHITE);
-    //     }
-    //   }
-
-    //   display.display();
-
-    //   static uint32_t last_pid_serial_ms = 0;
-    //   if (now - last_pid_serial_ms >= 100) {
-    //     last_pid_serial_ms = now;
-    //     Serial.printf("[PID] %s POS:%.2f KP:%.3f KI:%.3f KD:%.3f SPD:%.0f\n",
-    //                   pid_enabled ? "RUN" : "STOP", pid_line_position,
-    //                   pid_current_Kp, pid_current_Ki, pid_current_Kd,
-    //                   pid_base_speed);
-    //   }
-    // }
-
+    // (kept as-is: fully commented out in the original source)
     break;
   }
 

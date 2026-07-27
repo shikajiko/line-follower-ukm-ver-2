@@ -1,5 +1,6 @@
 #include "IO.h"
 #include "function.h"
+#include "locomotion.h"
 #include <Arduino.h>
 
 void setup() {
@@ -17,20 +18,6 @@ void setup() {
   delay(450); // keep ~1s total settle time like before
 
   Serial.begin(115200);
-// #if ARDUINO_USB_CDC_ON_BOOT
-//   // Avoid long blocking writes when USB CDC is not connected.
-//   Serial.setTxTimeoutMs(0);
-// #endif
-//   // If using native USB CDC, the host may need a moment to enumerate/open the
-//   // port. Waiting avoids missing the first log lines.
-// #if ARDUINO_USB_CDC_ON_BOOT
-//   {
-//     const unsigned long start = millis();
-//     while (!Serial && (millis() - start) < 2000) {
-//       delay(10);
-//     }
-//   }
-// #endif
   delay(1000);
 
   Serial.println("\n\n=== ESP32-S3 HARDWARE TEST FRAMEWORK ===");
@@ -68,7 +55,7 @@ void loop() {
 
   // Run test sequence state machine
   // runTestSequence();
-
+  runMainSequence();
   // Small delay to prevent overwhelming the CPU
   delay(50);
 }

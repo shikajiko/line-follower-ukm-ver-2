@@ -77,13 +77,13 @@ void checkBatteryAlarm();
 
 // PID controller structure
 typedef struct {
-  float Kp;           // Proportional gain
-  float Ki;           // Integral gain
-  float Kd;           // Derivative gain
-  float integral;     // Integral accumulator
-  float last_error;   // Previous error for derivative calculation
-  float integral_limit; // Anti-windup limit for integral term
-  float output_limit;  // Maximum output value
+  float Kp;              // Proportional gain
+  float Ki;              // Integral gain
+  float Kd;              // Derivative gain
+  float integral;        // Integral accumulator
+  float last_error;      // Previous error for derivative calculation
+  float integral_limit;  // Anti-windup limit for integral term
+  float output_limit;    // Maximum output value
 } PIDController;
 
 void calibrateLineSensorsAuto();
@@ -94,19 +94,25 @@ void ensureLineSensorThresholdDefaults();
 void printPIDDebug();
 void resetPIDValues();
 
-extern int16_t gy25_yaw = 0;   // x100 degrees
-extern int16_t gy25_pitch = 0; // x100 degrees
-extern int16_t gy25_roll = 0;  // x100 degrees
+// ============ GLOBAL STATE ============
+// These are DECLARATIONS ONLY (no initializer). The initializer is what
+// turns `extern int x = 0;` into a definition — putting that in a header
+// included by multiple .cpp files causes "multiple definition" linker
+// errors. The actual definitions live in function.cpp.
+
+extern int16_t gy25_yaw;   // x100 degrees
+extern int16_t gy25_pitch; // x100 degrees
+extern int16_t gy25_roll;  // x100 degrees
 
 // Button state
-extern int button1_last = BUTTON_RELEASED;
-extern int button2_last = BUTTON_RELEASED;
-extern int button3_last = BUTTON_RELEASED;
-extern int button4_last = BUTTON_RELEASED;
+extern int button1_last;
+extern int button2_last;
+extern int button3_last;
+extern int button4_last;
 
 // Motor state
-extern int16_t motor1_speed = 0;
-extern int16_t motor2_speed = 0;
+extern int16_t motor1_speed;
+extern int16_t motor2_speed;
 
 // Line sensor
 extern uint16_t line_sensor_raw[16];
