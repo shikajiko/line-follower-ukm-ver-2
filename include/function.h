@@ -19,6 +19,7 @@ extern Adafruit_SSD1306 display;
 #define DEFAULT_KD 1.f
 #define DEFAULT_PID_LIMIT 120.f
 #define DEFAULT_PID_BASE_SPEED 140.f
+#define DEFAULT_PID_SETPOINT 8.0f
 
 // Line sensor
 #define LINE_SENSOR_THRESHOLD 3600

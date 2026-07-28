@@ -109,7 +109,7 @@ bool battery_owns_display = false;
 bool is_calibrating = false;
 
 // VBAT sense calibration
-// VBAT_SCALE = VBAT(mV) / SENSE(mV). Include divider ratio + any trim.
+// VBAT_SCALE = VBAT(mV) / SENSE(mV). Include divider ratio + adisny trim.
 #ifndef VBAT_SCALE
 #define VBAT_SCALE 6.4f
 #endif
