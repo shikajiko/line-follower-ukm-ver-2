@@ -18,9 +18,10 @@ void pollButtons();
 // line_sensor_raw[] / line_sensor_threshold[] are declared `extern` in
 // function.h and defined in function.cpp.
 //
-// *** locomotion.h must gain two new state constants: ***
+// *** locomotion.h must gain three new state constants: ***
 //   STATE_CALIBRATING
 //   STATE_PID_TUNING
+//   STATE_LINE_DEBUG
 // (add them alongside STATE_IDLE / STATE_PID_FOLLOW / etc.)
 // ---------------------------------------------------------------------------
 
@@ -196,7 +197,13 @@ float calculateLinePosition(bool &should_turn_left, bool &should_turn_right) {
     return pid_line_position;
   }
 
-  Serial.printf("L: %d R: %d\n", left_weight, right_weight);
+  // Only log the corner weights when they actually produced a turn decision
+  // -- printing this unconditionally on every call (100+ Hz) is what was
+  // flooding the serial monitor and burying the real debug output.
+  if (should_turn_left || should_turn_right) {
+    Serial.printf("L: %d R: %d TURN:%s\n", left_weight, right_weight,
+                  should_turn_left ? "LEFT" : "RIGHT");
+  }
 
   line_detected = true;
   pid_line_position = weighted_sum / weight_total;
@@ -242,8 +249,13 @@ static void displayPIDDebug(const float line_pos, const float correction, int16_
 }
 
 static uint32_t line_lost_ms;
+static uint8_t turn_left_count = 0;
+static uint8_t turn_right_count = 0;
 
 void followLinePID(float base_speed, float max_speed_diff) {
+  static uint8_t prev_cmd = 0;
+  static uint32_t turn_dir_locked_until_ms = 0;
+  static uint8_t locked_dir = 0; // 0 = none, 1 = left, 2 = right
   bool should_turn_left = false;
   bool should_turn_right = false;
 
@@ -449,6 +461,96 @@ static void displayLineSensorDebug(const char *mode_label) {
 }
 
 
+// ============== CALIBRATION OUTLIER REJECTION =============
+// A plain running min/max (the original approach) has no filtering: a
+// single spurious ADC sample -- e.g. an ESP32 ADC2 channel glitching
+// during a WiFi TX burst, or a momentary loose connector -- permanently
+// poisons that sensor's calibrated range forever, since nothing ever pulls
+// max/min back down. In practice this showed up as one sensor's threshold
+// getting set far above anything it could realistically read, effectively
+// blinding that channel for the whole run.
+//
+// The fix: any new extreme that represents a big jump from the currently
+// accepted max/min (CAL_SPIKE_REJECT_DELTA) is treated as a *candidate*,
+// not accepted outright. It only becomes the new accepted max/min once a
+// similar value has been seen CAL_CONFIRM_SAMPLES times. Small, gradual
+// changes (normal sweeping across the line) are still accepted immediately
+// -- only suspiciously large single-sample jumps are held back.
+#define CAL_SPIKE_REJECT_DELTA 800
+#define CAL_CONFIRM_SAMPLES 3
+#define CAL_CONFIRM_TOLERANCE 200
+
+static uint16_t cal_pending_max[16];
+static uint8_t cal_pending_max_streak[16];
+static uint16_t cal_pending_min[16];
+static uint8_t cal_pending_min_streak[16];
+
+static void resetCalibrationCandidates() {
+  for (int i = 0; i < 16; i++) {
+    cal_pending_max[i] = 0;
+    cal_pending_max_streak[i] = 0;
+    cal_pending_min[i] = 0;
+    cal_pending_min_streak[i] = 0;
+  }
+}
+
+// Feeds one raw ADC sample into sensor i's running calibration max/min,
+// rejecting single-sample spikes until a similar reading repeats.
+static void updateCalibrationSample(uint8_t i, uint16_t raw) {
+  if (raw > line_sensor_max[i]) {
+    if (raw > static_cast<uint16_t>(line_sensor_max[i] + CAL_SPIKE_REJECT_DELTA)) {
+      if (cal_pending_max_streak[i] > 0 &&
+          abs(static_cast<int>(raw) - static_cast<int>(cal_pending_max[i])) <=
+              CAL_CONFIRM_TOLERANCE) {
+        cal_pending_max_streak[i]++;
+      } else {
+        cal_pending_max[i] = raw;
+        cal_pending_max_streak[i] = 1;
+      }
+
+      if (cal_pending_max_streak[i] >= CAL_CONFIRM_SAMPLES) {
+        Serial.printf("[CAL] Sensor %d: confirmed max spike %u (was %u)\n",
+                      i, raw, line_sensor_max[i]);
+        line_sensor_max[i] = raw;
+        cal_pending_max_streak[i] = 0;
+      } else {
+        Serial.printf("[CAL] Sensor %d: rejected max spike %u (streak %u/%u)\n",
+                      i, raw, cal_pending_max_streak[i], CAL_CONFIRM_SAMPLES);
+      }
+    } else {
+      // Small, gradual increase -- trust immediately.
+      line_sensor_max[i] = raw;
+    }
+  }
+
+  if (raw < line_sensor_min[i]) {
+    if (static_cast<uint32_t>(raw) + CAL_SPIKE_REJECT_DELTA < line_sensor_min[i]) {
+      if (cal_pending_min_streak[i] > 0 &&
+          abs(static_cast<int>(raw) - static_cast<int>(cal_pending_min[i])) <=
+              CAL_CONFIRM_TOLERANCE) {
+        cal_pending_min_streak[i]++;
+      } else {
+        cal_pending_min[i] = raw;
+        cal_pending_min_streak[i] = 1;
+      }
+
+      if (cal_pending_min_streak[i] >= CAL_CONFIRM_SAMPLES) {
+        Serial.printf("[CAL] Sensor %d: confirmed min dip %u (was %u)\n", i,
+                      raw, line_sensor_min[i]);
+        line_sensor_min[i] = raw;
+        cal_pending_min_streak[i] = 0;
+      } else {
+        Serial.printf("[CAL] Sensor %d: rejected min dip %u (streak %u/%u)\n",
+                      i, raw, cal_pending_min_streak[i], CAL_CONFIRM_SAMPLES);
+      }
+    } else {
+      // Small, gradual decrease -- trust immediately.
+      line_sensor_min[i] = raw;
+    }
+  }
+}
+
+
 // ============== MAIN SEQUENCE =============
 
 void runMainSequence() {
@@ -517,32 +619,83 @@ void runMainSequence() {
     }
   }
 
-  // ---- BTN4: toggle line-sensor calibration (press) ----
+  // ---- BTN4: tap = toggle line-sensor calibration; hold 2s = line debug ----
   static uint8_t state_before_calibration = STATE_IDLE;
+  static bool btn4_was_down = false;
+  static bool btn4_longpress_fired = false;
 
-  if (button4_pressed && current_state != STATE_PID_TUNING) {
-    if (current_state != STATE_CALIBRATING) {
-      state_before_calibration = current_state;
-      current_state = STATE_CALIBRATING;
-      is_calibrating = true;
-      stopMotors();
-      for (int i = 0; i < 16; i++) {
-        line_sensor_max[i] = 0;
-        line_sensor_min[i] = 4095;
+  const bool btn4_down = (button4_last == BUTTON_PRESSED);
+  const uint32_t btn4_held_ms = btn4_down ? (now - button4_press_time) : 0;
+
+  if (current_state != STATE_PID_TUNING) {
+    if (btn4_down) {
+      btn4_was_down = true;
+
+      // Only allow the long-press debug entry when we're not mid-calibration
+      // (a hold that started as a calibration toggle shouldn't also jump us
+      // into debug mode).
+      if (!btn4_longpress_fired && btn4_held_ms >= 2000 &&
+          current_state != STATE_CALIBRATING) {
+        btn4_longpress_fired = true;
+        current_state = STATE_LINE_DEBUG;
+        stopMotors();
+        Serial.println("[DEBUG] Entering STATE_LINE_DEBUG (BTN4 hold 2s)");
+        return;
       }
-      Serial.println("[CAL] Line sensor calibration STARTED (BTN4)");
+
+      // Show a countdown while holding, same pattern as BTN2/BTN3, but only
+      // while we're not already inside calibration or debug (those states
+      // draw their own screens every frame).
+      if (current_state != STATE_CALIBRATING &&
+          current_state != STATE_LINE_DEBUG) {
+        char countdown_buf[32];
+        const uint32_t remain_ms =
+            (btn4_held_ms >= 2000) ? 0 : (2000 - btn4_held_ms);
+        snprintf(countdown_buf, sizeof(countdown_buf), "%.1f s",
+                 remain_ms / 1000.0f);
+        displayOLED("HOLD BTN4", "LINE DEBUG in", countdown_buf,
+                    "Release=Calibrate");
+        return;
+      }
     } else {
-      for (int i = 0; i < 16; i++) {
-        line_sensor_threshold[i] = static_cast<uint16_t>(
-            (line_sensor_max[i] + line_sensor_min[i]) / 2);
+      // button released
+      if (btn4_was_down) {
+        if (!btn4_longpress_fired) {
+          // Short tap: original calibration start/stop behavior.
+          if (current_state != STATE_CALIBRATING) {
+            state_before_calibration = current_state;
+            current_state = STATE_CALIBRATING;
+            is_calibrating = true;
+            stopMotors();
+            for (int i = 0; i < 16; i++) {
+              line_sensor_max[i] = 0;
+              line_sensor_min[i] = 4095;
+            }
+            resetCalibrationCandidates();
+            Serial.println("[CAL] Line sensor calibration STARTED (BTN4)");
+          } else {
+            for (int i = 0; i < 16; i++) {
+              line_sensor_threshold[i] = static_cast<uint16_t>(
+                  (line_sensor_max[i] + line_sensor_min[i]) / 2);
+            }
+            // Print raw min/max alongside the derived thresholds so an
+            // implausible range (e.g. a max stuck near the 4095 ADC
+            // ceiling on a channel that never actually saw the line) is
+            // visible immediately, instead of only surfacing later as
+            // weird behavior during a run.
+            Serial.println("[CAL] Line sensor calibration DONE.");
+            for (int i = 0; i < 16; i++) {
+              Serial.printf("[CAL]   Sensor %2d: min=%4u max=%4u threshold=%4u\n",
+                            i, line_sensor_min[i], line_sensor_max[i],
+                            line_sensor_threshold[i]);
+            }
+            is_calibrating = false;
+            current_state = state_before_calibration;
+          }
+        }
+        btn4_was_down = false;
+        btn4_longpress_fired = false;
       }
-      Serial.print("[CAL] Line sensor calibration DONE. Thresholds: ");
-      for (int i = 0; i < 16; i++) {
-        Serial.printf("%d:%u ", i, line_sensor_threshold[i]);
-      }
-      Serial.println();
-      is_calibrating = false;
-      current_state = state_before_calibration;
     }
   }
 
@@ -579,7 +732,8 @@ void runMainSequence() {
   }
 
   // ---- LED_POWER: on whenever actively running (following, turning,
-  // calibrating, tuning); off while idle to save power / avoid glare. ----
+  // calibrating, tuning, debugging); off while idle to save power / avoid
+  // glare. ----
 
   switch (current_state) {
 
@@ -607,12 +761,7 @@ void runMainSequence() {
 
     for (int i = 0; i < 16; i++) {
       readLineSensorDigital(i); // refreshes line_sensor_raw[] / _digital[]
-      if (line_sensor_raw[i] > line_sensor_max[i]) {
-        line_sensor_max[i] = line_sensor_raw[i];
-      }
-      if (line_sensor_raw[i] < line_sensor_min[i]) {
-        line_sensor_min[i] = line_sensor_raw[i];
-      }
+      updateCalibrationSample(static_cast<uint8_t>(i), line_sensor_raw[i]);
     }
 
     char bitmask_buf[17];
@@ -622,6 +771,57 @@ void runMainSequence() {
     bitmask_buf[16] = '\0';
 
     displayOLED("CALIBRATING", bitmask_buf, "Sweep line + bg", "BTN4=Done");
+    break;
+  }
+
+  case STATE_LINE_DEBUG: {
+    // Read-only mode: motors stay off so you can hand-drag the robot over
+    // the track and watch the raw values on a laptop Serial Monitor
+    // without needing to squint at the tiny OLED while it's moving.
+    stopMotors();
+
+    bool should_turn_left = false;
+    bool should_turn_right = false;
+    const float line_pos =
+        calculateLinePosition(should_turn_left, should_turn_right);
+
+    // Throttled to 300ms (was 100ms) and gated so it only prints when the
+    // digital bitmask actually changed since the last print -- the robot
+    // spends most frames sitting on an unchanged reading, and printing
+    // every frame regardless was what made the stream unreadable.
+    static uint32_t last_debug_print_ms = 0;
+    static char last_dig_buf[17] = "";
+
+    char dig_buf[17];
+    for (int i = 0; i < 16; i++) {
+      dig_buf[i] = line_sensor_digital[i] ? '1' : '0';
+    }
+    dig_buf[16] = '\0';
+
+    const bool bitmask_changed = (strcmp(dig_buf, last_dig_buf) != 0);
+
+    if (bitmask_changed || (now - last_debug_print_ms >= 300)) {
+      last_debug_print_ms = now;
+      strcpy(last_dig_buf, dig_buf);
+
+      Serial.printf("[LINE-DEBUG] t=%lu POS:%.2f DETECTED:%s DIG:%s RAW:",
+                    now, line_pos, line_detected ? "YES" : "NO", dig_buf);
+      for (int i = 0; i < 16; i++) {
+        Serial.printf(" %d:%u/%u", i, line_sensor_raw[i],
+                      line_sensor_threshold[i]);
+      }
+      Serial.printf(" TRIGGER:%s\n",
+                    should_turn_left ? "LEFT" :
+                    should_turn_right ? "RIGHT" : "-");
+    }
+
+    char bitmask_buf[17];
+    for (int i = 0; i < 16; i++) {
+      bitmask_buf[i] = line_sensor_digital[i] ? '1' : '0';
+    }
+    bitmask_buf[16] = '\0';
+
+    displayOLED("LINE DEBUG", bitmask_buf, "See Serial Monitor", "BTN2=Exit");
     break;
   }
 
