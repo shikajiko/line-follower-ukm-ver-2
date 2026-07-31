@@ -3,89 +3,93 @@
 #include "display.h"
 #include "line_sensor.h"
 #include <Preferences.h>
+#include <array>
 
-PIDController pid_line_following;
+static PIDController pid;
 bool pid_enabled = true;
 float pid_line_position = 0.0f;
-float prev_pid_correction = 0.0f;
-uint32_t pid_last_update_ms = 0;
 
 static bool pid_settings_loaded = false;
 static Preferences pid_preferences;
 
-float pid_current_Kp = DEFAULT_KP;
-float pid_current_Ki = DEFAULT_KI;
-float pid_current_Kd = DEFAULT_KD;
-float pid_integral_limit = 100.0f;
-float pid_output_limit = DEFAULT_PID_LIMIT;
-float pid_base_speed = DEFAULT_PID_BASE_SPEED;
-
-void initPIDController(PIDController *pid, float Kp, float Ki, float Kd,
-                        float integral_limit, float output_limit) {
-  if (pid == nullptr) {
-    return;
-  }
-
-  pid->Kp = Kp;
-  pid->Ki = Ki;
-  pid->Kd = Kd;
-  pid->integral = 0.0f;
-  pid->last_error = 0.0f;
-  pid->integral_limit = integral_limit;
-  pid->output_limit = output_limit;
+void initPIDController() {
+  pid.Kp = DEFAULT_KP;
+  pid.Ki = DEFAULT_KI;
+  pid.Kd = DEFAULT_KD;
+  pid.integral = 0.0f;
+  pid.last_error = 0.0f;
+  pid.integral_limit = 0;
+  pid.output_limit = DEFAULT_PID_LIMIT;
+  pid.base_speed = DEFAULT_PID_BASE_SPEED;
 }
 
-float calculatePID(PIDController *pid, float setpoint, float current_value,
+std::array<float, 3> getPIDCoefficient() {
+    return {pid.Kp, pid.Ki, pid.Kd};
+}
+
+float getPIDBaseSpeed() {
+    return pid.base_speed;
+}
+
+void enablePID() {
+    pid_enabled = true;
+}
+
+void disablePID() {
+    pid_enabled = false;
+}
+
+bool isPIDEnabled() {
+    return pid_enabled;
+}
+
+bool isPIDSettingsLoaded() {
+    return pid_settings_loaded;
+}
+
+float calculatePID(float setpoint, float current_value,
                     float dt) {
-  if (pid == nullptr || dt <= 0.0f) {
-    return 0.0f;
-  }
-
   const float error = setpoint - current_value;
-  pid->integral += error * dt;
+  pid.integral += error * dt;
 
-  if (pid->integral > pid->integral_limit) {
-    pid->integral = pid->integral_limit;
-  } else if (pid->integral < -pid->integral_limit) {
-    pid->integral = -pid->integral_limit;
+  if (pid.integral > pid.integral_limit) {
+    pid.integral = pid.integral_limit;
+  } else if (pid.integral < -pid.integral_limit) {
+    pid.integral = -pid.integral_limit;
   }
 
-  const float derivative = (error - pid->last_error) / dt;
-  pid->last_error = error;
+  const float derivative = (error - pid.last_error) / dt;
+  pid.last_error = error;
 
   float output =
-      (pid->Kp * error) + (pid->Ki * pid->integral) + (pid->Kd * derivative);
+      (pid.Kp * error) + (pid.Ki * pid.integral) + (pid.Kd * derivative);
 
-  if (output > pid->output_limit) {
-    output = pid->output_limit;
-  } else if (output < -pid->output_limit) {
-    output = -pid->output_limit;
+  if (output > pid.output_limit) {
+    output = pid.output_limit;
+  } else if (output < -pid.output_limit) {
+    output = -pid.output_limit;
   }
 
   return output;
 }
 
-void resetPID(PIDController *pid) {
-  if (pid == nullptr) {
-    return;
-  }
-
-  pid->integral = 0.0f;
-  pid->last_error = 0.0f;
+void resetPID() {
+  pid.integral = 0.0f;
+  pid.last_error = 0.0f;
 }
 
-static void syncPIDController() {
-  initPIDController(&pid_line_following, pid_current_Kp, pid_current_Ki,
-                     pid_current_Kd, pid_integral_limit, pid_output_limit);
-}
-
-static void savePIDSettings() {
+void savePIDSettings(float new_kp, float new_ki, float new_kd, float new_base_speed) {
   pid_preferences.begin("pidline", false);
-  pid_preferences.putFloat("kp", pid_current_Kp);
-  pid_preferences.putFloat("ki", pid_current_Ki);
-  pid_preferences.putFloat("kd", pid_current_Kd);
-  pid_preferences.putFloat("base", pid_base_speed);
+  pid_preferences.putFloat("kp", new_kp);
+  pid_preferences.putFloat("ki", new_ki);
+  pid_preferences.putFloat("kd", new_kd);
+  pid_preferences.putFloat("base", new_base_speed);
   pid_preferences.end();
+
+  pid.Kp = new_kp;
+  pid.Ki = new_ki;
+  pid.Kd = new_kd;
+  pid.base_speed = new_base_speed;
 }
 
 void loadPIDSettings() {
@@ -96,40 +100,38 @@ void loadPIDSettings() {
   ensureLineSensorThresholdDefaults();
 
   pid_preferences.begin("pidline", true);
-  pid_current_Kp = pid_preferences.getFloat("kp", pid_current_Kp);
-  pid_current_Ki = pid_preferences.getFloat("ki", pid_current_Ki);
-  pid_current_Kd = pid_preferences.getFloat("kd", pid_current_Kd);
-  pid_base_speed = pid_preferences.getFloat("base", pid_base_speed);
+  pid.Kp = pid_preferences.getFloat("kp", DEFAULT_KP);
+  pid.Ki = pid_preferences.getFloat("ki", DEFAULT_KI);
+  pid.Kd = pid_preferences.getFloat("kd", DEFAULT_KD);
+  pid.base_speed = pid_preferences.getFloat("base", DEFAULT_PID_BASE_SPEED);
   pid_preferences.end();
 
-  if (pid_current_Kp < 0.0f) {
-    pid_current_Kp = 0.0f;
+  if (pid.Kp < 0.0f) {
+    pid.Kp = 0.0f;
   }
-  if (pid_current_Ki < 0.0f) {
-    pid_current_Ki = 0.0f;
+  if (pid.Ki < 0.0f) {
+    pid.Ki = 0.0f;
   }
-  if (pid_current_Kd < 0.0f) {
-    pid_current_Kd = 0.0f;
+  if (pid.Kd < 0.0f) {
+    pid.Kd = 0.0f;
   }
-  if (pid_base_speed < 0.0f) {
-    pid_base_speed = 0.0f;
-  } else if (pid_base_speed > 255.0f) {
-    pid_base_speed = 255.0f;
+  if (pid.base_speed < 0.0f) {
+    pid.base_speed = 0.0f;
+  } else if (pid.base_speed > 255.0f) {
+    pid.base_speed = 255.0f;
   }
 
-  syncPIDController();
-  resetPID(&pid_line_following);
+  resetPID();
   pid_settings_loaded = true;
 }
 
 void resetPIDValues() {
-  pid_current_Kp = DEFAULT_KP;
-  pid_current_Ki = DEFAULT_KI;
-  pid_current_Kd = DEFAULT_KD;
-  pid_base_speed = DEFAULT_PID_BASE_SPEED;
-  syncPIDController();
-  resetPID(&pid_line_following);
-  savePIDSettings();
+  pid.Kp = DEFAULT_KP;
+  pid.Ki = DEFAULT_KI;
+  pid.Kd = DEFAULT_KD;
+  pid.base_speed = DEFAULT_PID_BASE_SPEED;
+
+  resetPID();
 }
 
 float calculateLinePosition() {
@@ -159,9 +161,7 @@ float calculateLinePosition() {
   return pid_line_position;
 }
 
-
-
-static void displayPIDDebug(const float line_pos, const float correction, int16_t right_speed, int16_t left_speed, bool is_line_detected) {
+void displayPIDDebug(const float line_pos, const float correction, int16_t right_speed, int16_t left_speed, bool is_line_detected) {
   static uint32_t debug_cycle_start_ms = 0;
   if (debug_cycle_start_ms == 0) {
     debug_cycle_start_ms = millis();

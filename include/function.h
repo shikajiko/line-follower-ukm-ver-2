@@ -5,10 +5,6 @@
 #include <Adafruit_SSD1306.h>
 #include <stdint.h>
 
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define SCREEN_ADDRESS 0x3C
 #define LIMIT_BATTERY 11.1f
 // Global OLED display object
 extern Adafruit_SSD1306 display;

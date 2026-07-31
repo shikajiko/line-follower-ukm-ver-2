@@ -2,6 +2,8 @@
 #include "function.h"
 #include "button.h"
 #include "line_sensor.h"
+#include "main_sequence.h"
+#include "display.h"
 // #include "locomotion.h"
 #include <Arduino.h>
 
@@ -56,8 +58,8 @@ void loop() {
   pollButtons();
   readLineSensors();
   // Run test sequence state machine
-  runTestSequence();
-  // runMainSequence();
+  // runTestSequence();
+  runMainSequence();
   // Small delay to prevent overwhelming the CPU
   delay(50);
 }

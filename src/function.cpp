@@ -27,10 +27,6 @@
 #define BATTERY_ALARM_TOGGLE_MS 120u     // fast pulse reads as more urgent
                                           // than a steady tone
 
-// ============ OLED DISPLAY OBJECT ============
-// Adafruit_SSD1306 display(width, height, &Wire, reset_pin);
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
 // ============ GLOBAL VARIABLES ============
 
 // ---- Definitions for externs declared in function.h ----
@@ -83,7 +79,7 @@ static float battery_last_voltage = 0.0f;
 static uint32_t battery_display_until = 0;
 bool battery_owns_display = false;
 
-bool is_calibrating = false;
+static bool is_calibrating = false;
 
 // VBAT sense calibration
 // VBAT_SCALE = VBAT(mV) / SENSE(mV). Include divider ratio + adisny trim.
