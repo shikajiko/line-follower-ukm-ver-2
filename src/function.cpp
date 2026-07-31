@@ -1,7 +1,7 @@
 #include "function.h"
-#include "locomotion.h"
 #include "button.h"
 #include "IO.h"
+#include "line_sensor.h"
 #include <Arduino.h>
 #include <Preferences.h>
 #include <WebServer.h>
@@ -42,12 +42,6 @@ int16_t gy25_roll = 0;  // x100 degrees
 int16_t motor1_speed = 0;
 int16_t motor2_speed = 0;
 
-uint16_t line_sensor_raw[16] = {0};
-uint8_t line_sensor_digital[16] = {0};
-uint16_t line_sensor_max[16] = {0};
-uint16_t line_sensor_min[16] = {0};
-uint16_t line_sensor_threshold[16] = {0};
-
 // GY25 UART communication
 uint32_t gy25_last_read = 0;
 bool gy25_timeout = false;
@@ -64,24 +58,6 @@ int32_t enc1_count = 0;
 int32_t enc2_count = 0;
 int32_t enc1_last_count = 0;
 int32_t enc2_last_count = 0;
-
-// ---- Button state tracking ----
-// All button reading/debouncing/hold-detection lives in button.cpp.
-// pollButtons() is called once per tick from loop() (not from here) so that
-// sampling stays a single, predictable I/O step independent of which game
-// logic consumes the result. This file only reads state through the
-// isButtonPressed()/isButtonReleased()/isButtonDown()/isButtonUp()/
-// buttonHeld()/buttonHeldMs() accessors — it never touches buttons[]
-// directly.
-// initButtonStruct() (button.cpp) wires buttons[0..3] to
-// BUTTON1_PIN..BUTTON4_PIN in that order, so we mirror that mapping here
-// with named indices for readability.
-enum ButtonIndex {
-  BTN_1 = 0,
-  BTN_2 = 1,
-  BTN_3 = 2,
-  BTN_4 = 3,
-};
 
 // Servo position
 uint16_t servo1_pulse = 1500;
@@ -626,10 +602,9 @@ void initMUX() {
   digitalWrite(MUX_S2_PIN, LOW);
   digitalWrite(MUX_S3_PIN, LOW);
 
-  // Setup default thresholds for Line Sensor
-  for (int i = 0; i < 16; i++) {
-    line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
-  }
+  // Setup default thresholds for Line Sensor (via API — the threshold
+  // array itself lives in line_sensor.cpp).
+  ensureLineSensorThresholdDefaults();
 }
 
 void initGY25() {
@@ -1009,158 +984,19 @@ void stopMotors() {
 }
 
 // ============ LINE SENSOR 16CH MODULE ============
+// Reading, thresholding, and calibration now live entirely in
+// line_sensor.cpp behind the API declared in line_sensor.h. This file
+// only calls that API (readLineSensors(), getLineSensorRaw/Digital(),
+// lineSensorCalibrationBegin/Update/End(), etc.) — it never touches the
+// underlying arrays.
 
-void selectMUXChannel(uint8_t channel) {
-  channel = channel & 0x0F;
-
-  switch (channel) {
-  case 0:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 1:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 2:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 3:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 4:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 5:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 6:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 7:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
-    break;
-  case 8:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  case 9:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  case 10:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  case 11:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  case 12:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  case 13:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  case 14:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  case 15:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
-    break;
-  }
-
-  delayMicroseconds(100);
-}
-
-uint16_t readLineSensor(uint8_t channel) {
-  selectMUXChannel(channel);
-
-  // Baca langsung ADC (tanpa filter peak-to-peak 2kHz)
-  uint16_t raw = analogRead(MUX_ADC_PIN);
-
-  line_sensor_raw[channel] = raw;
-  return raw;
-}
-
-// Menggunakan threshold dari array hasil kalibrasi
-uint8_t readLineSensorDigital(uint8_t channel) {
-  uint16_t raw = readLineSensor(channel);
-  uint8_t digital = (raw > line_sensor_threshold[channel]) ? 1 : 0;
-  line_sensor_digital[channel] = digital;
-  return digital;
-}
-
-void ensureLineSensorThresholdDefaults() {
-  for (int i = 0; i < 16; i++) {
-    if (line_sensor_threshold[i] == 0) {
-      line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
-    }
-  }
-}
-
-void calibrateLineSensorsAuto() {
-  ensureLineSensorThresholdDefaults();
-
-  for (int i = 0; i < 16; i++) {
-    if (line_sensor_max[i] == 0 && line_sensor_min[i] == 0) {
-      line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
-    } else {
-      line_sensor_threshold[i] =
-          static_cast<uint16_t>((line_sensor_max[i] + line_sensor_min[i]) / 2);
-    }
-  }
-}
-
-void printPIDDebug() {
-  Serial.printf(
-      "[PID] KP:%.3f KI:%.3f KD:%.3f BASE:%.1f POS:%.2f LINE:%s RUN:%s\n",
-      pid_current_Kp, pid_current_Ki, pid_current_Kd, pid_base_speed,
-      pid_line_position, line_detected ? "ON" : "OFF",
-      pid_enabled ? "YES" : "NO");
-}
+// void printPIDDebug() {
+//   Serial.printf(
+//       "[PID] KP:%.3f KI:%.3f KD:%.3f BASE:%.1f POS:%.2f LINE:%s RUN:%s\n",
+//       pid_current_Kp, pid_current_Ki, pid_current_Kd, pid_base_speed,
+//       pid_line_position, line_detected ? "ON" : "OFF",
+//       pid_enabled ? "YES" : "NO");
+// }
 
 // ============ SINGLE SENSOR CHECK MODE ============
 
@@ -1187,8 +1023,8 @@ void runSingleSensorCheck() {
     buzzer_off_ms = 0;
   }
 
-  // Baca channel aktif (selectMUXChannel + analogRead internal).
-  uint16_t val = readLineSensor(single_sensor_channel);
+  // Baca channel aktif melalui API (selectMUXChannel + analogRead internal).
+  uint16_t val = readLineSensorChannel(single_sensor_channel);
 
   // Tampilan OLED.
   display.clearDisplay();
@@ -1220,9 +1056,9 @@ void runSingleSensorCheck() {
 void runTestSequence() {
   uint32_t now = millis();
 
-  loadPIDSettings();
+  // loadPIDSettings();
   bool btn3_poweroff = buttonHeld(BTN_3, 3000);
-  
+
   if (isButtonDown(BTN_3)) {
     if (btn3_poweroff) {
       displayOLED("POWER OFF", "BTN3 > 3s", "Shutting down", "");
@@ -1307,9 +1143,9 @@ void runTestSequence() {
     }
     if (last_state == TEST_STATE_PID_LINE) {
       stopMotors();
-      pid_enabled = false;
-      pid_menu_active = false;
-      pid_last_update_ms = 0;
+      // pid_enabled = false;
+      // pid_menu_active = false;
+      // pid_last_update_ms = 0;
     }
     if (last_state == TEST_STATE_WEB_GAMEPAD) {
       webGamepadStopMotors();
@@ -1575,6 +1411,10 @@ void runTestSequence() {
   }
 
   case TEST_STATE_LINE_SENSOR: {
+    // All calibration state (min/max/threshold) and the raw/digital
+    // arrays now live behind line_sensor.h — this state only drives the
+    // workflow (when to begin/update/end calibration, what to show) and
+    // reads results back out through the getters.
     if (test_phase == 0) {
       test_state_timer = now;
       test_phase = 1;
@@ -1592,19 +1432,14 @@ void runTestSequence() {
     if (isButtonPressed(BTN_4)) {
       is_calibrating = !is_calibrating; // Toggle mode kalibrasi
       if (is_calibrating) {
-        // Mulai kalibrasi: Reset nilai min/max
-        for (int i = 0; i < 16; i++) {
-          line_sensor_max[i] = 0;
-          line_sensor_min[i] = 4095;
-        }
+        // Mulai kalibrasi: reset min/max via API
+        lineSensorCalibrationBegin();
       } else {
-        // Selesai kalibrasi: Hitung threshold tiap channel (Tengah-tengah /
-        // Midpoint)
+        // Selesai kalibrasi: hitung threshold tiap channel via API
+        lineSensorCalibrationEnd();
         Serial.print("[LINE] CALIBRATION DONE. Thresholds: ");
         for (int i = 0; i < 16; i++) {
-          line_sensor_threshold[i] =
-              (line_sensor_max[i] + line_sensor_min[i]) / 2;
-          Serial.printf("%d:%u ", i, line_sensor_threshold[i]);
+          Serial.printf("%d:%u ", i, getLineSensorThreshold(i));
         }
         Serial.println();
       }
@@ -1620,21 +1455,12 @@ void runTestSequence() {
       break; // Keluar dari frame ini dan masuk ke test selanjutnya
     }
 
-    long raw_adc[16] = {0};
-    for (int i = 0; i < 16; i++) {
-      readLineSensorDigital(i); // Update internal raw & status digital secara
-                                // spesifik (pakai threshold array)
-      raw_adc[i] = line_sensor_raw[i];
+    // Update raw + digital for all channels via the API.
+    readLineSensors();
 
-      // Update pembacaan Min & Max saat mode Kalibrasi AKTIF
-      if (is_calibrating) {
-        if (line_sensor_raw[i] > line_sensor_max[i]) {
-          line_sensor_max[i] = line_sensor_raw[i];
-        }
-        if (line_sensor_raw[i] < line_sensor_min[i]) {
-          line_sensor_min[i] = line_sensor_raw[i];
-        }
-      }
+    // Update pembacaan Min & Max saat mode Kalibrasi AKTIF (via API).
+    if (is_calibrating) {
+      lineSensorCalibrationUpdate();
     }
 
     uint8_t disp_group = ((now - test_state_timer) / 1000) % 4;
@@ -1653,12 +1479,12 @@ void runTestSequence() {
     }
 
     display.setCursor(0, 8);
-    display.printf("%u:%u %u:%u", ch_start, line_sensor_raw[ch_start],
-                   ch_start + 1, line_sensor_raw[ch_start + 1]);
+    display.printf("%u:%u %u:%u", ch_start, getLineSensorRaw(ch_start),
+                   ch_start + 1, getLineSensorRaw(ch_start + 1));
 
     display.setCursor(0, 16);
-    display.printf("%u:%u %u:%u", ch_start + 2, line_sensor_raw[ch_start + 2],
-                   ch_start + 3, line_sensor_raw[ch_start + 3]);
+    display.printf("%u:%u %u:%u", ch_start + 2, getLineSensorRaw(ch_start + 2),
+                   ch_start + 3, getLineSensorRaw(ch_start + 3));
 
     const int bar_y = 24;
     const int bar_h = 39;
@@ -1668,7 +1494,7 @@ void runTestSequence() {
     for (int i = 0; i < 16; i++) {
       int x = i * slot_w;
       display.drawRect(x, bar_y, box_w, bar_h, SSD1306_WHITE);
-      if (line_sensor_digital[i]) {
+      if (getLineSensorDigital(i)) {
         display.fillRect(x + 1, bar_y + 1, box_w - 2, bar_h - 2, SSD1306_WHITE);
       }
     }
@@ -1681,11 +1507,11 @@ void runTestSequence() {
       // Dump semua channel 0-15 dalam satu baris agar cepat dibaca.
       Serial.printf("[LINE] %s RAW:", is_calibrating ? "CAL:ON" : "CAL:OFF");
       for (int i = 0; i < 16; i++) {
-        Serial.printf(" %d:%u", i, line_sensor_raw[i]);
+        Serial.printf(" %d:%u", i, getLineSensorRaw(i));
       }
       Serial.print(" DIG:");
       for (int i = 0; i < 16; i++) {
-        Serial.print(line_sensor_digital[i] ? '1' : '0');
+        Serial.print(getLineSensorDigital(i) ? '1' : '0');
       }
       Serial.println();
     }

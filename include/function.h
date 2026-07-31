@@ -22,7 +22,7 @@ extern Adafruit_SSD1306 display;
 #define DEFAULT_PID_SETPOINT 8.0f
 
 // Line sensor
-#define LINE_SENSOR_THRESHOLD 3600
+
 
 // ============ INIT FUNCTIONS ============
 
@@ -59,11 +59,6 @@ void setServo(uint8_t servoNum, uint16_t pulseUs);
 // Motor control (IN + shared enable)
 void setMotor(uint8_t motorNum, int16_t speed); // -255 to +255
 void stopMotors();
-
-// Line sensor 16 channels via MUX+ADC
-uint16_t readLineSensor(uint8_t channel); // raw ADC value
-// Menggunakan threshold internal yang bisa dikalibrasi
-uint8_t readLineSensorDigital(uint8_t channel); // binary ON/OFF
 
 // Utility display/serial
 void displayOLED(const char *line1, const char *line2, const char *line3,
@@ -109,15 +104,6 @@ extern int16_t gy25_roll;  // x100 degrees
 extern int16_t motor1_speed;
 extern int16_t motor2_speed;
 
-// Line sensor
-extern uint16_t line_sensor_raw[16];
-extern uint8_t line_sensor_digital[16];
-extern bool is_calibrating;
-
-// Line sensor calibration arrays
-extern uint16_t line_sensor_max[16];
-extern uint16_t line_sensor_min[16];
-extern uint16_t line_sensor_threshold[16];
 
 // Battery low display
 extern bool battery_owns_display;
