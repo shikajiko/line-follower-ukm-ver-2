@@ -1,6 +1,8 @@
 #include "IO.h"
 #include "function.h"
-#include "locomotion.h"
+#include "button.h"
+#include "line_sensor.h"
+// #include "locomotion.h"
 #include <Arduino.h>
 
 void setup() {
@@ -52,10 +54,10 @@ void setup() {
 void loop() {
   // Poll button inputs
   pollButtons();
-
+  readLineSensors();
   // Run test sequence state machine
-  // runTestSequence();
-  runMainSequence();
+  runTestSequence();
+  // runMainSequence();
   // Small delay to prevent overwhelming the CPU
   delay(50);
 }

@@ -13,16 +13,6 @@
 // Global OLED display object
 extern Adafruit_SSD1306 display;
 
-// Default PID values
-#define DEFAULT_KP 0.2f
-#define DEFAULT_KI 0.f
-#define DEFAULT_KD 1.f
-#define DEFAULT_PID_LIMIT 120.f
-#define DEFAULT_PID_BASE_SPEED 140.f
-#define DEFAULT_PID_SETPOINT 8.0f
-
-// Line sensor
-
 
 // ============ INIT FUNCTIONS ============
 
@@ -61,30 +51,11 @@ void setMotor(uint8_t motorNum, int16_t speed); // -255 to +255
 void stopMotors();
 
 // Utility display/serial
-void displayOLED(const char *line1, const char *line2, const char *line3,
-                 const char *line4);
 void printSerial(const char *msg);
 void pollButtons();
 
 float readBatteryVoltage();
 void checkBatteryAlarm();
-
-// ============ PID CONTROL SYSTEM ============
-
-// PID controller structure
-typedef struct {
-  float Kp;              // Proportional gain
-  float Ki;              // Integral gain
-  float Kd;              // Derivative gain
-  float integral;        // Integral accumulator
-  float last_error;      // Previous error for derivative calculation
-  float integral_limit;  // Anti-windup limit for integral term
-  float output_limit;    // Maximum output value
-} PIDController;
-
-void calibrateLineSensorsAuto();
-bool isLineDetected();
-void ensureLineSensorThresholdDefaults();
 
 // PID debug and monitoring
 void printPIDDebug();

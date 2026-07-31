@@ -9,24 +9,6 @@
 #include <string.h>
 #include <math.h>
 
-// Existing button polling is implemented in function.cpp.
-void pollButtons();
-
-// ---------------------------------------------------------------------------
-// NOTE: T_INTERSECTION_SENSOR_CNT / LEFT_CORNER_SENSOR_CNT /
-// RIGHT_CORNER_SENSOR_CNT are defined in locomotion.h.
-// line_sensor_raw[] / line_sensor_threshold[] are declared `extern` in
-// function.h and defined in function.cpp.
-//
-// *** locomotion.h must gain three new state constants: ***
-//   STATE_CALIBRATING
-//   STATE_PID_TUNING
-//   STATE_LINE_DEBUG
-// (add them alongside STATE_IDLE / STATE_PID_FOLLOW / etc.)
-// ---------------------------------------------------------------------------
-
-
-
 uint8_t current_state = STATE_IDLE;
 
 // ========== PID CONTROLLER =============
@@ -44,12 +26,7 @@ uint32_t pid_last_update_ms = 0;
 static Preferences pid_preferences;
 
 // PID parameters (adjustable during runtime)
-float pid_current_Kp = DEFAULT_KP;
-float pid_current_Ki = DEFAULT_KI;
-float pid_current_Kd = DEFAULT_KD;
-float pid_integral_limit = 100.0f;
-float pid_output_limit = DEFAULT_PID_LIMIT;
-float pid_base_speed = DEFAULT_PID_BASE_SPEED;
+
 
 void initPIDController(PIDController *pid, float Kp, float Ki, float Kd,
                         float integral_limit, float output_limit) {
@@ -163,7 +140,7 @@ void resetPIDValues() {
   savePIDSettings();
 }
 
-float calculateLinePosition(bool &should_turn_left, bool &should_turn_right) {
+float calculateLinePosition() {
   ensureLineSensorThresholdDefaults();
   int left_weight = 0;
   int right_weight = 0;
@@ -174,13 +151,6 @@ float calculateLinePosition(bool &should_turn_left, bool &should_turn_right) {
   for (int i = 0; i < 16; i++) {
     const uint8_t active = readLineSensorDigital(i);
     if (active) {
-      if (i < 6) {
-        left_weight += (6-i) * 3;
-      }
-      else if (i > 9) {
-        right_weight += abs((i-9)) * 3;
-      };
-
       const float strength = static_cast<float>(line_sensor_raw[i]) -
                               static_cast<float>(line_sensor_threshold[i]);
       const float weight = (strength > 0.0f) ? strength : 1.0f;
@@ -189,20 +159,9 @@ float calculateLinePosition(bool &should_turn_left, bool &should_turn_right) {
     }
   }
 
-  if (left_weight > right_weight && left_weight >= 6 && left_weight <=30) should_turn_left = true;
-  else if (right_weight > left_weight && right_weight >= 6 && right_weight <=30 ) should_turn_right = true;
-  
   if (weight_total <= 0.0f) {
     line_detected = false;
     return pid_line_position;
-  }
-
-  // Only log the corner weights when they actually produced a turn decision
-  // -- printing this unconditionally on every call (100+ Hz) is what was
-  // flooding the serial monitor and burying the real debug output.
-  if (should_turn_left || should_turn_right) {
-    Serial.printf("L: %d R: %d TURN:%s\n", left_weight, right_weight,
-                  should_turn_left ? "LEFT" : "RIGHT");
   }
 
   line_detected = true;
@@ -249,8 +208,6 @@ static void displayPIDDebug(const float line_pos, const float correction, int16_
 }
 
 static uint32_t line_lost_ms;
-static uint8_t turn_left_count = 0;
-static uint8_t turn_right_count = 0;
 
 void followLinePID(float base_speed, float max_speed_diff) {
   static uint8_t prev_cmd = 0;
@@ -342,59 +299,6 @@ void followLinePID(float base_speed, float max_speed_diff) {
   displayPIDDebug(line_position, correction, right_speed, left_speed, line_detected);
 }
 
-// ============== TURNING ===============
-
-#define TURN_SPEED 80
-#define DELAY_BEFORE_TURN 50u
-
-static uint32_t turn_entry_ms = 0;
-static uint32_t turn_center_since_ms = 0;
-
-bool isLineDetected() {
-  for (int i = 0; i < 16; i++) {
-    if (readLineSensorDigital(i)) return true;
-  }
-
-  return false;
-}
-void turnLeft() {
-  displayOLED("TURNING LEFT", "", "", "");
-  while (isLineDetected()) {
-    setMotor(1, pid_base_speed/2);
-    setMotor(2, pid_base_speed/2);
-  }
-
-  stopMotors();
-  delay(DELAY_BEFORE_TURN);
-
-  while (readLineSensorDigital(7) == 0 && readLineSensorDigital(8) == 0) {
-    setMotor(1, -TURN_SPEED);
-    setMotor(2, TURN_SPEED);
-  }
-
-  // stopMotors();
-  // current_state = STATE_IDLE;
-}
-
-void turnRight() {
-  displayOLED("TURNING RIGHT", "", "", "");
-  while (isLineDetected()) {
-    setMotor(1, pid_base_speed/2);
-    setMotor(2, pid_base_speed/2);
-  }
-
-  stopMotors();
-  delay(DELAY_BEFORE_TURN);
-
-  while (readLineSensorDigital(7) == 0 && readLineSensorDigital(8) == 0) {
-    setMotor(1, TURN_SPEED);
-    setMotor(2, -TURN_SPEED);
-  }
-
-  // stopMotors();
-  // current_state = STATE_IDLE;
-}
-
 // ============== LINE SENSOR DEBUG DISPLAY =============
 // Builds a compact 4-line debug view of the 16 line sensors:
 //   line1: current mode label
@@ -403,6 +307,7 @@ void turnRight() {
 //   line4: raw ADC values for 4 channels at a time, cycling every ~800ms
 //          so all 16 channels get shown in rotation without cluttering
 //          the small OLED.
+
 static void displayLineSensorDebug(const char *mode_label) {
   static uint32_t debug_cycle_start_ms = 0;
   if (debug_cycle_start_ms == 0) {
@@ -447,8 +352,6 @@ static void displayLineSensorDebug(const char *mode_label) {
     displayOLED(mode_label, bitmask_buf, line3_buf, line4_buf);
   }
 
-  // Also dump full raw + digital state to Serial periodically for deeper
-  // debugging (e.g. via PlatformIO's Serial Monitor).
   static uint32_t last_serial_ms = 0;
   if (now - last_serial_ms >= 200) {
     last_serial_ms = now;
