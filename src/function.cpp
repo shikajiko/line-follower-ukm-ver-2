@@ -10,6 +10,7 @@
 #include <driver/pcnt.h>
 #include <stdio.h>
 #include <string.h>
+#include "locomotion.h"
 
 #ifndef WIFI_SSID
 #define WIFI_SSID "Robotika@test"
@@ -63,10 +64,6 @@ uint16_t servo2_pulse = 1500;
 // Motor PWM (LEDC)
 #define MOTOR_PWM_FREQ 20000
 #define MOTOR_PWM_RES_BITS 8
-#define MOTOR1_IN1_CH 2
-#define MOTOR1_IN2_CH 3
-#define MOTOR2_IN3_CH 4
-#define MOTOR2_IN4_CH 5
 
 // Some drivers need a short time enabled while direction inputs change.
 #define MOTOR_ENABLE_HOLD_MS 300u
@@ -916,16 +913,6 @@ void setMotor(uint8_t motorNum, int16_t speed) {
   digitalWrite(INH1_PIN, enable ? HIGH : LOW);
 }
 
-void stopMotors() {
-  ledcWrite(MOTOR1_IN1_CH, 0);
-  ledcWrite(MOTOR1_IN2_CH, 0);
-  ledcWrite(MOTOR2_IN3_CH, 0);
-  ledcWrite(MOTOR2_IN4_CH, 0);
-  digitalWrite(INH1_PIN, LOW);
-
-  motor1_speed = 0;
-  motor2_speed = 0;
-}
 
 // ============ LINE SENSOR 16CH MODULE ============
 // Reading, thresholding, and calibration now live entirely in

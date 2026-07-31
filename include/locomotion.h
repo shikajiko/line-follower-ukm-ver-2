@@ -6,6 +6,13 @@
 #include <stdint.h>
 #include "function.h"
 
+#define MOTOR1_IN1_CH 2
+#define MOTOR1_IN2_CH 3
+#define MOTOR2_IN3_CH 4
+#define MOTOR2_IN4_CH 5
+
 void followLinePID();
+void moveMotors(int16_t left_speed, int16_t right_speed);
+void stopMotors();
 
 #endif // locomotion.h

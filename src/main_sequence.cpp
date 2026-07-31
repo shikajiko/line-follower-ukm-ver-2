@@ -26,7 +26,7 @@ void runMainSequence() {
 
   if (isButtonDown(BTN_3) && current_state != STATE_PID_TUNING) {
     if (btn3_poweroff) {
-    displayOLED("POWER OFF", "BTN3 > 3s", "Shutting down", "");
+      displayOLED("POWER OFF", "BTN3 > 3s", "Shutting down", "");
       power(false);
       return;
     } else {
@@ -131,7 +131,6 @@ void runMainSequence() {
     
         current_state = STATE_IDLE;
     }
-
     break;
   }
 

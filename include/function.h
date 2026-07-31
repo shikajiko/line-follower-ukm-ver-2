@@ -44,7 +44,6 @@ void setServo(uint8_t servoNum, uint16_t pulseUs);
 
 // Motor control (IN + shared enable)
 void setMotor(uint8_t motorNum, int16_t speed); // -255 to +255
-void stopMotors();
 
 // Utility display/serial
 void printSerial(const char *msg);
@@ -54,7 +53,6 @@ float readBatteryVoltage();
 void checkBatteryAlarm();
 
 // PID debug and monitoring
-void printPIDDebug();
 void resetPIDValues();
 
 // ============ GLOBAL STATE ============

@@ -18,6 +18,33 @@ float prev_pid_correction = 0.0f;
 static uint32_t line_lost_ms;
 static uint32_t pid_last_update_ms = 0;
 
+void moveMotors(int16_t left_speed, int16_t right_speed) {
+  if (left_speed > 255) {
+    left_speed = 255;
+  } else if (left_speed < -255) {
+    left_speed = -255; 
+  }
+  if (right_speed > 255) {
+    right_speed = 255;
+  } else if (right_speed < -255) {
+    right_speed = -255;
+  }
+
+  setMotor(1, left_speed);
+  setMotor(2, right_speed);
+}
+
+void stopMotors() {
+  ledcWrite(MOTOR1_IN1_CH, 0);
+  ledcWrite(MOTOR1_IN2_CH, 0);
+  ledcWrite(MOTOR2_IN3_CH, 0);
+  ledcWrite(MOTOR2_IN4_CH, 0);
+  digitalWrite(INH1_PIN, LOW);
+
+  motor1_speed = 0;
+  motor2_speed = 0;
+}
+
 void followLinePID() {
   if (!isPIDEnabled()) {
     stopMotors();
@@ -61,20 +88,7 @@ void followLinePID() {
   int16_t left_speed = static_cast<int16_t>(getPIDBaseSpeed() - correction);
   int16_t right_speed = static_cast<int16_t>(getPIDBaseSpeed() + correction);
 
-  if (left_speed > 255) {
-    left_speed = 255;
-  } else if (left_speed < -255) {
-    left_speed = -255; 
-  }
-  if (right_speed > 255) {
-    right_speed = 255;
-  } else if (right_speed < -255) {
-    right_speed = -255;
-  }
-
-  setMotor(1, left_speed);
-  setMotor(2, right_speed);
-
+  moveMotors(left_speed, right_speed);
   displayPIDDebug(line_position, correction, right_speed, left_speed, line_detected);
 }
 
