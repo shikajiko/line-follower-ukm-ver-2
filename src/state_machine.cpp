@@ -1,10 +1,11 @@
-#include "main_sequence.h"
+#include "state_machine.h"
 #include "locomotion.h"
 #include "function.h"
 #include "pid.h"
 #include "button.h"
 #include "display.h"
 #include "line_sensor.h"
+#include "mission.h"
 
 #define PID_TEST_DRIVE_MS 250u;
 
@@ -13,7 +14,7 @@ bool pid_menu_active = false;
 uint8_t pid_menu_item = 0;
 static bool is_calibrating = false;
 
-void runMainSequence() {
+void runStateMachine() {
   const uint32_t now = millis();
 
   checkBatteryAlarm();
@@ -87,7 +88,7 @@ void runMainSequence() {
       stopMotors();
     }
 
-    if (current_state == STATE_PID_FOLLOW) {
+    if (current_state == STATE_RUN_MISSION) {
       delay(100);
     }
 
@@ -101,14 +102,14 @@ void runMainSequence() {
     displayOLED("IDLE", "BTN1=START", "BTN4=CALIBRATE", "");
 
     if (isButtonDown(BTN_1)) {
-      current_state = STATE_PID_FOLLOW;
+      current_state = STATE_RUN_MISSION;
     }
     break;
   }
 
-  case STATE_PID_FOLLOW: {
+  case STATE_RUN_MISSION: {
     enablePID();
-    followLinePID();
+    runMission();
     break;
   }
 

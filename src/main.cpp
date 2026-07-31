@@ -2,7 +2,7 @@
 #include "function.h"
 #include "button.h"
 #include "line_sensor.h"
-#include "main_sequence.h"
+#include "state_machine.h"
 #include "display.h"
 // #include "locomotion.h"
 #include <Arduino.h>
@@ -59,7 +59,7 @@ void loop() {
   readLineSensors();
   // Run test sequence state machine
   // runTestSequence();
-  runMainSequence();
+  runStateMachine();
   // Small delay to prevent overwhelming the CPU
   delay(50);
 }
