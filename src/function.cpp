@@ -1,5 +1,6 @@
 #include "function.h"
 #include "locomotion.h"
+#include "button.h"
 #include "IO.h"
 #include <Arduino.h>
 #include <Preferences.h>
@@ -38,11 +39,6 @@ int16_t gy25_yaw = 0;   // x100 degrees
 int16_t gy25_pitch = 0; // x100 degrees
 int16_t gy25_roll = 0;  // x100 degrees
 
-int button1_last = BUTTON_RELEASED;
-int button2_last = BUTTON_RELEASED;
-int button3_last = BUTTON_RELEASED;
-int button4_last = BUTTON_RELEASED;
-
 int16_t motor1_speed = 0;
 int16_t motor2_speed = 0;
 
@@ -69,19 +65,23 @@ int32_t enc2_count = 0;
 int32_t enc1_last_count = 0;
 int32_t enc2_last_count = 0;
 
-// Button state tracking
-uint32_t button_debounce_time = 50;
-uint32_t button1_press_time = 0;
-uint32_t button2_press_time = 0;
-uint32_t button3_press_time = 0;
-uint32_t button4_press_time = 0;
-bool button1_pressed = false;
-bool button2_pressed = false;
-bool button3_pressed = false;
-bool button4_pressed = false;
-
-uint32_t button3_hold_start = 0;
-bool button3_poweroff_latched = false;
+// ---- Button state tracking ----
+// All button reading/debouncing/hold-detection lives in button.cpp.
+// pollButtons() is called once per tick from loop() (not from here) so that
+// sampling stays a single, predictable I/O step independent of which game
+// logic consumes the result. This file only reads state through the
+// isButtonPressed()/isButtonReleased()/isButtonDown()/isButtonUp()/
+// buttonHeld()/buttonHeldMs() accessors — it never touches buttons[]
+// directly.
+// initButtonStruct() (button.cpp) wires buttons[0..3] to
+// BUTTON1_PIN..BUTTON4_PIN in that order, so we mirror that mapping here
+// with named indices for readability.
+enum ButtonIndex {
+  BTN_1 = 0,
+  BTN_2 = 1,
+  BTN_3 = 2,
+  BTN_4 = 3,
+};
 
 // Servo position
 uint16_t servo1_pulse = 1500;
@@ -566,6 +566,9 @@ void initButton() {
   pinMode(BUTTON2_PIN, BUTTON_PINMODE);
   pinMode(BUTTON3_PIN, BUTTON_PINMODE);
   pinMode(BUTTON4_PIN, BUTTON_PINMODE);
+
+  // Wire up the debounced Button struct array (pins + initial state).
+  initButtonStruct();
 
   // Illumination LED for line sensor reflection test (Normal Mode)
   pinMode(LED_POWER_PIN, OUTPUT);
@@ -1159,81 +1162,6 @@ void printPIDDebug() {
       pid_enabled ? "YES" : "NO");
 }
 
-// ============ BUTTON POLLING ============
-void pollButtons() {
-  uint32_t now = millis();
-  // Serial.println("Polling buttons...");
-  static int btn1_raw_last = BUTTON_RELEASED;
-  static int btn2_raw_last = BUTTON_RELEASED;
-  static int btn3_raw_last = BUTTON_RELEASED;
-  static int btn4_raw_last = BUTTON_RELEASED;
-
-  int btn1_state = digitalRead(BUTTON1_PIN);
-  int btn2_state = digitalRead(BUTTON2_PIN);
-  int btn3_state = digitalRead(BUTTON3_PIN);
-  int btn4_state = digitalRead(BUTTON4_PIN);
-
-  // BTN1 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
-  if (btn1_state != btn1_raw_last) {
-    btn1_raw_last = btn1_state;
-    button1_press_time = now;
-  }
-  button1_pressed = false;
-  if ((now - button1_press_time) > button_debounce_time) {
-    if (btn1_state != button1_last) {
-      button1_last = btn1_state; // debounced stable state
-      if (button1_last == BUTTON_PRESSED) {
-        button1_pressed = true;
-      }
-    }
-  }
-
-  // BTN2 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
-  if (btn2_state != btn2_raw_last) {
-    btn2_raw_last = btn2_state;
-    button2_press_time = now;
-  }
-  button2_pressed = false;
-  if ((now - button2_press_time) > button_debounce_time) {
-    if (btn2_state != button2_last) {
-      button2_last = btn2_state; // debounced stable state
-      if (button2_last == BUTTON_PRESSED) {
-        button2_pressed = true;
-      }
-    }
-  }
-
-  // BTN3 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
-  if (btn3_state != btn3_raw_last) {
-    btn3_raw_last = btn3_state;
-    button3_press_time = now;
-  }
-  button3_pressed = false;
-  if ((now - button3_press_time) > button_debounce_time) {
-    if (btn3_state != button3_last) {
-      button3_last = btn3_state; // debounced stable state
-      if (button3_last == BUTTON_PRESSED) {
-        button3_pressed = true;
-      }
-    }
-  }
-
-  // BTN4 debounce + one-shot press event (polaritas: BUTTON_ACTIVE_HIGH)
-  if (btn4_state != btn4_raw_last) {
-    btn4_raw_last = btn4_state;
-    button4_press_time = now;
-  }
-  button4_pressed = false;
-  if ((now - button4_press_time) > button_debounce_time) {
-    if (btn4_state != button4_last) {
-      button4_last = btn4_state; // debounced stable state
-      if (button4_last == BUTTON_PRESSED) {
-        button4_pressed = true;
-      }
-    }
-  }
-}
-
 // ============ SINGLE SENSOR CHECK MODE ============
 
 // Cek sensor MUX satu-per-satu (mirip "tes robot basic").
@@ -1249,7 +1177,7 @@ void runSingleSensorCheck() {
   // Pindah channel dengan BTN1, tapi abaikan bila BTN2 juga ditekan supaya
   // kombo keluar (BTN1+BTN2) tidak ikut memindah channel.
   static uint32_t buzzer_off_ms = 0;
-  if (button1_pressed && digitalRead(BUTTON2_PIN) == BUTTON_RELEASED) {
+  if (isButtonPressed(BTN_1) && isButtonUp(BTN_2)) {
     single_sensor_channel = (single_sensor_channel + 1) % 16;
     digitalWrite(BUZZER_PIN, HIGH); // beep pendek non-blocking
     buzzer_off_ms = now + 60;
@@ -1292,21 +1220,11 @@ void runSingleSensorCheck() {
 void runTestSequence() {
   uint32_t now = millis();
 
-  // loadPIDSettings() guards itself internally (safe/cheap to call every
-  // frame) — its "already loaded" flag has internal linkage in
-  // locomotion.cpp and isn't visible from this file.
   loadPIDSettings();
-
-  // Global safety action: hold BUTTON3 for >3s to cut system power
-  int btn3_state = digitalRead(BUTTON3_PIN);
-  if (btn3_state == BUTTON_PRESSED) {
-    if (button3_hold_start == 0) {
-      button3_hold_start = now;
-    }
-
-    uint32_t held_ms = now - button3_hold_start;
-    if (!button3_poweroff_latched && held_ms >= 3000) {
-      button3_poweroff_latched = true;
+  bool btn3_poweroff = buttonHeld(BTN_3, 3000);
+  
+  if (isButtonDown(BTN_3)) {
+    if (btn3_poweroff) {
       displayOLED("POWER OFF", "BTN3 > 3s", "Shutting down", "");
       power(false);
       test_running = 0;
@@ -1314,22 +1232,19 @@ void runTestSequence() {
       return;
     } else if (current_test_state != TEST_STATE_PID_LINE) {
       char countdown_buf[32];
-      uint32_t remain_ms = 3000 - held_ms;
+      uint32_t held_ms = buttonHeldMs(BTN_3);
+      uint32_t remain_ms = (held_ms < 3000) ? (3000 - held_ms) : 0;
       float remain_s = remain_ms / 1000.0f;
       snprintf(countdown_buf, sizeof(countdown_buf), "%.1f s", remain_s);
       displayOLED("HOLD BTN3", "Power off in", countdown_buf, "Release=Cancel");
       return;
     }
-  } else {
-    button3_hold_start = 0;
-    button3_poweroff_latched = false;
   }
 
   // Toggle mode cek sensor satu-per-satu: tahan BTN1+BTN2 bersamaan ~1s.
   static uint32_t combo_hold_start = 0;
   static bool combo_handled = false;
-  bool both_down = (digitalRead(BUTTON1_PIN) == BUTTON_PRESSED) &&
-                   (digitalRead(BUTTON2_PIN) == BUTTON_PRESSED);
+  bool both_down = isButtonDown(BTN_1) && isButtonDown(BTN_2);
   if (both_down) {
     if (combo_hold_start == 0) {
       combo_hold_start = now;
@@ -1360,21 +1275,22 @@ void runTestSequence() {
     current_test_state = TEST_STATE_IDLE;
   }
 
-  if (button1_pressed && current_test_state == TEST_STATE_IDLE) {
+  if (isButtonPressed(BTN_1) && current_test_state == TEST_STATE_IDLE) {
     test_running = 1;
     current_test_state = TEST_STATE_GY25;
     test_state_timer = now;
     test_phase = 0;
   } else if (current_test_state != TEST_STATE_BUTTON) {
     // Global navigation (manual): BTN1=Next, BTN2=Prev
-    if (button1_pressed && current_test_state != TEST_STATE_IDLE &&
+    if (isButtonPressed(BTN_1) && current_test_state != TEST_STATE_IDLE &&
         current_test_state != TEST_STATE_DONE &&
         current_test_state != TEST_STATE_LINE_SENSOR &&
         current_test_state != TEST_STATE_PID_LINE) {
       current_test_state++;
       test_state_timer = now;
       test_phase = 0;
-    } else if (button2_pressed && current_test_state > TEST_STATE_GY25 &&
+    } else if (isButtonPressed(BTN_2) &&
+               current_test_state > TEST_STATE_GY25 &&
                current_test_state != TEST_STATE_IDLE &&
                current_test_state != TEST_STATE_PID_LINE) {
       current_test_state--;
@@ -1463,43 +1379,23 @@ void runTestSequence() {
 
   case TEST_STATE_BUTTON: {
     // Show live button states on OLED.
-    // In this test, navigation is by HOLD (so you can tap buttons to test).
-    static uint32_t btn1_hold_start = 0;
-    static uint32_t btn2_hold_start = 0;
+    // In this test, navigation is by HOLD (so you can tap buttons to test),
+    // using the shared buttonHeld() hold-detection.
+    const int b1 = isButtonDown(BTN_1);
+    const int b2 = isButtonDown(BTN_2);
+    const int b3 = isButtonDown(BTN_3);
+    const int b4 = isButtonDown(BTN_4);
 
-    const int b1 = digitalRead(BUTTON1_PIN);
-    const int b2 = digitalRead(BUTTON2_PIN);
-    const int b3 = digitalRead(BUTTON3_PIN);
-    const int b4 = digitalRead(BUTTON4_PIN);
-
-    if (b1 == BUTTON_PRESSED) {
-      if (btn1_hold_start == 0)
-        btn1_hold_start = now;
-    } else {
-      btn1_hold_start = 0;
-    }
-    if (b2 == BUTTON_PRESSED) {
-      if (btn2_hold_start == 0)
-        btn2_hold_start = now;
-    } else {
-      btn2_hold_start = 0;
-    }
-
-    if (btn1_hold_start != 0 && (now - btn1_hold_start) >= 800) {
+    if (buttonHeld(BTN_1, 800)) {
       current_test_state++;
       test_state_timer = now;
       test_phase = 0;
-      btn1_hold_start = 0;
-      btn2_hold_start = 0;
       return;
     }
-    if (btn2_hold_start != 0 && (now - btn2_hold_start) >= 800 &&
-        current_test_state > TEST_STATE_GY25) {
+    if (buttonHeld(BTN_2, 800) && current_test_state > TEST_STATE_GY25) {
       current_test_state--;
       test_state_timer = now;
       test_phase = 0;
-      btn1_hold_start = 0;
-      btn2_hold_start = 0;
       return;
     }
 
@@ -1687,13 +1583,13 @@ void runTestSequence() {
     }
 
     if (!line_sensor_entry_armed) {
-      if (!button1_pressed) {
+      if (!isButtonPressed(BTN_1)) {
         line_sensor_entry_armed = true;
       }
     }
 
     // --- Proses Kontrol Kalibrasi via BUTTON 4 ---
-    if (button4_pressed) {
+    if (isButtonPressed(BTN_4)) {
       is_calibrating = !is_calibrating; // Toggle mode kalibrasi
       if (is_calibrating) {
         // Mulai kalibrasi: Reset nilai min/max
@@ -1716,7 +1612,8 @@ void runTestSequence() {
 
     // Lanjut ke Test WEB GAMEPAD via Button 1 (di-handle terpisah untuk case
     // ini)
-    if (line_sensor_entry_armed && button1_pressed && !is_calibrating) {
+    if (line_sensor_entry_armed && isButtonPressed(BTN_1) &&
+        !is_calibrating) {
       current_test_state = TEST_STATE_PID_LINE;
       test_state_timer = now;
       test_phase = 0;
@@ -1842,7 +1739,7 @@ void runTestSequence() {
   case TEST_STATE_DONE: {
     displayOLED("ALL TESTS DONE", "", "BTN1=Restart", "BTN2=Prev");
 
-    if (button1_pressed) {
+    if (isButtonPressed(BTN_1)) {
       test_running = 0;
       current_test_state = TEST_STATE_IDLE;
     }
