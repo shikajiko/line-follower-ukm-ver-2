@@ -13,6 +13,8 @@ uint8_t current_state = STATE_IDLE;
 bool pid_menu_active = false;
 uint8_t pid_menu_item = 0;
 static bool is_calibrating = false;
+static bool btn4_hold_fired = false;
+static bool btn4_suppress_release = false;
 
 void runStateMachine() {
   const uint32_t now = millis();
@@ -42,6 +44,7 @@ void runStateMachine() {
   }
 
   bool btn2_pid_tuning = buttonHeld(BTN_2, 1000);
+  bool btn4_line_debug = buttonHeld(BTN_4, 1000);
 
   if (current_state != STATE_PID_TUNING) {
     if (btn2_pid_tuning) {
@@ -64,8 +67,21 @@ void runStateMachine() {
         return;
     }
 
-    if (isButtonPressed(BTN_4) && current_state != STATE_CALIBRATING) {
-        current_state = STATE_CALIBRATING;
+    if (btn4_line_debug) {
+        if (current_state == STATE_IDLE) {
+            btn4_hold_fired = true;
+            current_state = STATE_LINE_DEBUG;
+            return;
+        }
+    }
+
+    if (isButtonReleased(BTN_4)) {
+        if (btn4_suppress_release) {
+            btn4_suppress_release = false;
+        } else if (!btn4_hold_fired && current_state == STATE_IDLE) {
+            current_state = STATE_CALIBRATING;
+        }
+        btn4_hold_fired = false;
         return;
     }
   }
@@ -92,6 +108,10 @@ void runStateMachine() {
       delay(100);
     }
 
+    if (last_state == STATE_CALIBRATING) {
+      is_calibrating = false;
+    }
+
     last_state = current_state;
   }
 
@@ -116,26 +136,39 @@ void runStateMachine() {
   case STATE_CALIBRATING: {
     stopMotors();
     displayOLED("SWIPE LINE TO CALIBRATE", "BTN 4 TO FINISH", "", "");
-    is_calibrating = true;
-    if (is_calibrating) {
+
+    if (!is_calibrating) {
+        is_calibrating = true;
         lineSensorCalibrationBegin();
-    } 
-    
-    if (isButtonPressed(BTN_4) || isButtonPressed(BTN_2))
-    {
+    }
+
+    readLineSensors();
+    lineSensorCalibrationUpdate();
+
+    if (isButtonPressed(BTN_4)) {
         lineSensorCalibrationEnd();
         Serial.print("[LINE] CALIBRATION DONE. Thresholds: ");
         for (int i = 0; i < 16; i++) {
           Serial.printf("%d:%u ", i, getLineSensorThreshold(i));
         }
         Serial.println();
-    
+
+        is_calibrating = false;
         current_state = STATE_IDLE;
+        btn4_suppress_release = true;
     }
     break;
   }
 
   case STATE_LINE_DEBUG: {
+    char sensorMask[17];
+
+    for (int i = 0; i < 16; i++) {
+      sensorMask[i] = getLineSensorDigital(i) ? '1' : '0';
+    }
+    sensorMask[16] = '\0';
+    
+    displayOLED("LINE DEBUG",  sensorMask, "", "BTN2=EXIT");
     break;
   }
 
@@ -302,14 +335,5 @@ void runStateMachine() {
   default:
     displayOLED("ERROR", "Unknown state", "", "");
     break;
-  }
-
-  if (current_state != STATE_IDLE && current_state != STATE_PID_TUNING &&
-      isButtonDown(BTN_2)) {
-    if (current_state == STATE_CALIBRATING) {
-      is_calibrating = false;
-    }
-    current_state = STATE_IDLE;
-    stopMotors();
   }
 }

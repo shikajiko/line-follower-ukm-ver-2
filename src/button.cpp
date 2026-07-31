@@ -37,10 +37,15 @@ static void updateButton(Button &b, uint32_t now) {
         if (raw != b.stableState) {
             b.stableState = raw;
 
-            if (raw == BUTTON_PRESSED)
+            if (raw == BUTTON_PRESSED) {
                 b.pressedEvent = true;
-            else
+                b.holdStart = now;
+                b.holdLatched = false;
+            } else {
                 b.releasedEvent = true;
+                b.holdStart = 0;
+                b.holdLatched = false;
+            }
         }
     }
 }
@@ -56,20 +61,13 @@ bool buttonHeld(uint8_t id, uint32_t ms)
 {
     Button &b = buttons[id];
 
-    if (b.stableState == BUTTON_PRESSED) {
-
-        if (b.holdStart == 0)
-            b.holdStart = millis();
-
+    if (b.stableState == BUTTON_PRESSED && b.holdStart != 0) {
         if (!b.holdLatched &&
             millis() - b.holdStart >= ms)
         {
             b.holdLatched = true;
             return true;
         }
-    } else {
-        b.holdStart = 0;
-        b.holdLatched = false;
     }
 
     return false;

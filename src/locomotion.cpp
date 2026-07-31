@@ -64,7 +64,7 @@ void followLinePID() {
   const float line_position = calculateLinePosition();
   line_detected = isLineDetected();
 
-  float correction = 0;
+  float correction = calculatePID(DEFAULT_PID_SETPOINT, line_position, dt);
 
   if (!line_detected) {
     if (line_lost_ms == 0) {
