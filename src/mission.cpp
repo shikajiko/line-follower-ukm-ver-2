@@ -4,9 +4,18 @@
 #include "display.h"
 
 static int dist_encoder = 0;
+static int last_mission = -1;
 static uint32_t mission_timer = 0;
 static uint32_t current_mission = 0;
 
+void resetMissionState() {
+    last_mission = -1;
+    current_mission = 0;
+    mission_timer = 0;
+    dist_encoder = 0;
+    resetEncoder(1);
+    resetEncoder(2);
+}
 
 static void displayMissionInfo(uint32_t index, uint32_t encoder_left, uint32_t encoder_right, const MissionState &mission) {
     char line1_buf[24], line2_buf[24], line3_buf[24], line4_buf[24];
@@ -82,9 +91,9 @@ bool checkStateObjective(const MissionState &s) {
     return false;
 }
 
+// MODE, LSPEED, RSPEED, TIMER, CONDITION, THRESHOLD, MASKLEFT, MASKRIGHT, MASKMODE
 MissionState missionStates[] = {
-    {DIRECT_MOVE, 100, 100, 0, COND_SENSOR_MASK, 0, 0b11111111, 0b11111111, MASK_OR},
-    {PID, 0, 0, 0, COND_SENSOR_MASK, 0, 0b00001111, 0b11110000, MASK_AND}
+    {PID, 100, 100, 0, COND_DIST_GT, 1000, 0b00011111, 0b11111000, MASK_AND}
 };
 
 const int NUM_STATES = sizeof(missionStates) / sizeof(missionStates[0]);
@@ -98,7 +107,7 @@ void runMission() {
         return;
     }
 
-    static int last_mission = -1;
+
     bool justEntered = (current_mission != last_mission);
     last_mission = current_mission;
 

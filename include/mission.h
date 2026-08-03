@@ -45,5 +45,6 @@ void stateTimer(uint32_t timerMs);
 void runStateLogic(const MissionState &s, bool justEntered);
 bool checkStateObjective(const MissionState &s);
 void runMission();
+void resetMissionState();
 
 #endif //mission.h

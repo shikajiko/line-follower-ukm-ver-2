@@ -22,6 +22,7 @@ void runStateMachine() {
   checkBatteryAlarm();
 
   if (!isPIDSettingsLoaded()) {
+    initPIDController();
     loadPIDSettings();
   }
 
@@ -118,6 +119,7 @@ void runStateMachine() {
   switch (current_state) {
 
   case STATE_IDLE: {
+    resetMissionState();
     disablePID();
     displayOLED("IDLE", "BTN1=START", "BTN4=CALIBRATE", "");
 

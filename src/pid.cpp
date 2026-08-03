@@ -12,6 +12,10 @@ float pid_line_position = 0.0f;
 static bool pid_settings_loaded = false;
 static Preferences pid_preferences;
 
+static const float LINE_SENSOR_GAIN[16] = {
+    -350, -200, -130, -90, -50, -8, -4, -2,
+    2,     4,    8,    50, 90,  130, 200, 350};
+
 void initPIDController() {
   pid.Kp = DEFAULT_KP;
   pid.Ki = DEFAULT_KI;
@@ -69,6 +73,7 @@ float calculatePID(float setpoint, float current_value,
   } else if (output < -pid.output_limit) {
     output = -pid.output_limit;
   }
+  Serial.printf("kp: %.2f ki: %.2f kd: %.2f\n correction: %.2f limit: %.2f\n", pid.Kp, pid.Ki, pid.Kd, output, pid.output_limit);
 
   return output;
 }
@@ -136,28 +141,19 @@ void resetPIDValues() {
 
 float calculateLinePosition() {
   ensureLineSensorThresholdDefaults();
-  int left_weight = 0;
-  int right_weight = 0;
 
-  float weighted_sum = 0.0f;
-  float weight_total = 0.0f;
-
+  float line_error = 0.0f;
   for (int i = 0; i < 16; i++) {
-    const uint8_t active = getLineSensorDigital(i);
-    if (active) {
-      const float strength = static_cast<float>(getLineSensorRaw(i)) -
-                              static_cast<float>(getLineSensorThreshold(i));
-      const float weight = (strength > 0.0f) ? strength : 1.0f;
-      weighted_sum += static_cast<float>(i) * weight;
-      weight_total += weight;
+    if (getLineSensorDigital(i)) {
+      line_error += LINE_SENSOR_GAIN[i];
     }
   }
 
-  if (weight_total <= 0.0f) {
+  if (!isLineDetected()) {
     return pid_line_position;
   }
 
-  pid_line_position = weighted_sum / weight_total;
+  pid_line_position = line_error;
   return pid_line_position;
 }
 
@@ -186,9 +182,7 @@ void displayPIDDebug(const float line_pos, const float correction, int16_t right
   } else {
     snprintf(line2_buf, sizeof(line2_buf), "NO LINE DETECTED");
   }
-
-  // Rotate through 4 groups of 4 channels every 800ms so raw values for
-  // all 16 sensors are visible over time.
+  
   char line3_buf[24];
   snprintf(line3_buf, sizeof(line3_buf), "RIGHT: %d LEFT: %d", right_speed, left_speed);
   

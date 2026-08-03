@@ -6,7 +6,6 @@
 #define DEFAULT_KD 1.f
 #define DEFAULT_PID_LIMIT 120.f
 #define DEFAULT_PID_BASE_SPEED 140.f
-#define DEFAULT_PID_SETPOINT 8.0f
 
 #include <array>
 #include <stdint.h>
