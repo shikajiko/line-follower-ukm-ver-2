@@ -170,13 +170,21 @@ void runStateMachine() {
 
   case STATE_LINE_DEBUG: {
     char sensorMask[17];
+    float rawSensor[17];
 
     for (int i = 0; i < 16; i++) {
       sensorMask[i] = getLineSensorDigital(i) ? '1' : '0';
+      rawSensor[i] = getLineSensorRaw(i);
     }
+
     sensorMask[16] = '\0';
-    
+
     displayOLED("LINE DEBUG",  sensorMask, "", "BTN2=EXIT");
+    
+    for(int i = 0; i < 16; i++) {
+      Serial.printf("raw %d: %.2f\n", i, rawSensor[i]);
+    }
+    
     break;
   }
 
