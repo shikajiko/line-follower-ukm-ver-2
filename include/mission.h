@@ -10,6 +10,7 @@ enum MaskMode {
 
 enum DriveMode {
     DIRECT_MOVE,
+    PID_STRAIGHT,
     PID
 };
 
@@ -18,18 +19,19 @@ enum ConditionType {
     COND_ENCODER2_GT,
     COND_DIST_GT,
     COND_SENSOR_MASK,
-    COND_IMMEDIATE
+    COND_IMMEDIATE,
+    COND_TIMER,
 };
 
-enum ActionFlags {
-    ACT_NONE = 0,
-    ACT_BRAKE = 1 << 0 
+enum StopMode {
+    NONE = 0,
+    STOP = 1,
+    BRAKE = 2
 };
 
 struct MissionState {
     DriveMode mode;
     int leftSpeed, rightSpeed;
-    int timerMs;
 
     ConditionType condition;
     int32_t condition_threshold;
@@ -37,6 +39,7 @@ struct MissionState {
     uint8_t sensorRight;
     uint8_t sensorLeft;
     MaskMode maskMode;
+    StopMode stopMode;
 };
 
 uint8_t MaskSensor(uint8_t maskLeft, uint8_t maskRight, uint8_t mode);

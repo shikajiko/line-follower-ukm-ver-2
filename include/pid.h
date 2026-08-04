@@ -40,7 +40,7 @@ std::array<float, 3> getPIDCoefficient();
 float getPIDBaseSpeed();
 
 void displayPIDDebug(const float line_pos, const float correction, int16_t right_speed, int16_t left_speed, bool is_line_detected);
-float calculateLinePosition();
+float calculateLinePosition(bool straight);
 
 
 #endif //pid.h

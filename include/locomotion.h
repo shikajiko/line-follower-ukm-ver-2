@@ -11,8 +11,9 @@
 #define MOTOR2_IN3_CH 4
 #define MOTOR2_IN4_CH 5
 
-void followLinePID();
+void followLinePID(bool straight);
 void moveMotors(int16_t left_speed, int16_t right_speed);
 void stopMotors();
+void brakeMotors();
 
 #endif // locomotion.h

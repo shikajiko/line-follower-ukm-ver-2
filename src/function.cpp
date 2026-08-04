@@ -773,6 +773,10 @@ int16_t readGY25Yaw() {
 
 int32_t readEncoder(uint8_t encoderNum) {
   int16_t count = 0;
+  if (REVERSE_MOTOR) {
+    if (encoderNum == 1) encoderNum = 2;
+    else if (encoderNum == 2) encoderNum = 1;
+  }
 
   if (encoderNum == 1) {
     pcnt_get_counter_value(PCNT_UNIT_0, &count);

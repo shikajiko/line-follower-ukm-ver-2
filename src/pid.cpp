@@ -12,10 +12,8 @@ float pid_line_position = 0.0f;
 static bool pid_settings_loaded = false;
 static Preferences pid_preferences;
 
-static const float LINE_SENSOR_GAIN[16] = {
-    -350, -200, -130, -90, -50, -8, -4, -2,
-    2,     4,    8,    50, 90,  130, 200, 350};
-
+static const float LINE_SENSOR_GAIN[16] =  {-350, -200, -130, -90, -50, -8, -4, -2,
+                        2, 4, 8, 50, 90, 130, 200, 350};
 void initPIDController() {
   pid.Kp = DEFAULT_KP;
   pid.Ki = DEFAULT_KI;
@@ -139,11 +137,18 @@ void resetPIDValues() {
   resetPID();
 }
 
-float calculateLinePosition() {
+float calculateLinePosition(bool straight) {
+  int start = 0;
+  int end = 16;
+
+  if (straight) {
+    start = 4;
+    end = 12;
+  }
   ensureLineSensorThresholdDefaults();
 
   float line_error = 0.0f;
-  for (int i = 0; i < 16; i++) {
+  for (int i = start; i < end; i++) {
     if (getLineSensorDigital(i)) {
       line_error += LINE_SENSOR_GAIN[i];
     }
@@ -182,7 +187,7 @@ void displayPIDDebug(const float line_pos, const float correction, int16_t right
   } else {
     snprintf(line2_buf, sizeof(line2_buf), "NO LINE DETECTED");
   }
-  
+
   char line3_buf[24];
   snprintf(line3_buf, sizeof(line3_buf), "RIGHT: %d LEFT: %d", right_speed, left_speed);
   

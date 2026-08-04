@@ -26,6 +26,10 @@ void runStateMachine() {
     loadPIDSettings();
   }
 
+  if (!isCalibrationLoaded()) {
+    loadCalibration();
+  }
+
   bool btn3_poweroff = buttonHeld(BTN_3, 3000);
 
   if (isButtonDown(BTN_3) && current_state != STATE_PID_TUNING) {
@@ -46,6 +50,7 @@ void runStateMachine() {
 
   bool btn2_pid_tuning = buttonHeld(BTN_2, 1000);
   bool btn4_line_debug = buttonHeld(BTN_4, 1000);
+  static uint8_t last_state = STATE_IDLE;
 
   if (current_state != STATE_PID_TUNING) {
     if (btn2_pid_tuning) {
@@ -79,15 +84,13 @@ void runStateMachine() {
     if (isButtonReleased(BTN_4)) {
         if (btn4_suppress_release) {
             btn4_suppress_release = false;
-        } else if (!btn4_hold_fired && current_state == STATE_IDLE) {
+        } else if (!btn4_hold_fired && current_state == STATE_IDLE && last_state != STATE_PID_TUNING) {
             current_state = STATE_CALIBRATING;
         }
         btn4_hold_fired = false;
         return;
     }
   }
-
-  static uint8_t last_state = STATE_IDLE;
 
   const bool led_should_be_on = (current_state != STATE_IDLE);
   digitalWrite(LED_POWER_PIN, led_should_be_on ? HIGH : LOW);
@@ -131,6 +134,9 @@ void runStateMachine() {
 
   case STATE_RUN_MISSION: {
     enablePID();
+    if (last_state != STATE_RUN_MISSION) {
+      delay(200);
+    }
     runMission();
     break;
   }
@@ -183,12 +189,13 @@ void runStateMachine() {
         pid_menu_item++;
       } else {
         current_state = STATE_IDLE;
+        btn4_suppress_release = true;   
       }
     }
 
     float kp_step = 0.01f;
-    float ki_step = 0.01f;
-    float kd_step = 0.01f;
+    float ki_step = 0.001f;
+    float kd_step = 0.001f;
     float base_step = 5.0f;
 
     auto pid_coefficient = getPIDCoefficient();
@@ -208,7 +215,7 @@ void runStateMachine() {
     if (btn1_fast || btn2_fast) {
         kp_step = 0.10f;
         ki_step = 0.10f;
-        kd_step = 0.10f;
+        kd_step = 0.01f;
         base_step = 20.0f;
     }
 
@@ -294,7 +301,7 @@ void runStateMachine() {
 
     if (pid_test_active) {
       enablePID();
-      followLinePID();
+      followLinePID(false);
     } else if (isPIDEnabled()) {
       disablePID();
       stopMotors();

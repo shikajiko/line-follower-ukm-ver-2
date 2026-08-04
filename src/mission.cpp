@@ -68,7 +68,7 @@ uint8_t MaskSensor(uint8_t maskLeft, uint8_t maskRight, MaskMode mode) {
 
 void runStateLogic(const MissionState &s, bool justEntered) {
     if (justEntered) {
-        // idk if this will be used
+        mission_timer = millis();
     }
 
     switch (s.mode) {
@@ -76,7 +76,8 @@ void runStateLogic(const MissionState &s, bool justEntered) {
          displayMissionInfo(current_mission, readEncoder(1), readEncoder(2), s);
          moveMotors(s.leftSpeed, s.rightSpeed); 
          break;
-        case PID: followLinePID(); break;
+        case PID_STRAIGHT: followLinePID(true); break;
+        case PID: followLinePID(false); break;
     }
 }
 
@@ -86,14 +87,19 @@ bool checkStateObjective(const MissionState &s) {
         case COND_ENCODER2_GT: return readEncoder(2) > s.condition_threshold;
         case COND_DIST_GT: return dist_encoder > s.condition_threshold;
         case COND_SENSOR_MASK: return MaskSensor(s.sensorLeft, s.sensorRight, s.maskMode);
+        case COND_TIMER: return (millis() - mission_timer) > s.condition_threshold;
         case COND_IMMEDIATE: return true;
     }
     return false;
 }
 
-// MODE, LSPEED, RSPEED, TIMER, CONDITION, THRESHOLD, MASKLEFT, MASKRIGHT, MASKMODE
+// MODE, LSPEED, RSPEED, CONDITION, THRESHOLD, MASKLEFT, MASKRIGHT, MASKMODE, STOPMODE
 MissionState missionStates[] = {
-    {PID, 100, 100, 0, COND_DIST_GT, 1000, 0b00011111, 0b11111000, MASK_AND}
+    {PID_STRAIGHT, 135, 140, COND_DIST_GT, 450, 0b11111100, 0b00111111, MASK_OR, STOP},
+    {DIRECT_MOVE, -140, 140, COND_DIST_GT, 80, 0b00000000, 0b00011111, MASK_OR, STOP},
+    {PID, 100, 100, COND_DIST_GT, 150, 0b11111100, 0b00111111, MASK_OR, NONE},
+    {PID_STRAIGHT, 100, 100, COND_SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE},
+    {PID, 100, 100, COND_DIST_GT, 1000, 0b11111100, 0b00111111, MASK_OR, NONE},
 };
 
 const int NUM_STATES = sizeof(missionStates) / sizeof(missionStates[0]);
@@ -113,14 +119,23 @@ void runMission() {
 
     const MissionState &s = missionStates[current_mission];
 
-    runStateLogic(s, justEntered);
-
-    if (checkStateObjective(s)) {
+    if (checkStateObjective(s) && !justEntered) {
         resetEncoder(1);
         resetEncoder(2);
         mission_timer = 0;
 
-        current_mission++;
         last_mission = current_mission;
+        current_mission++;
+        dist_encoder = 0;
+
+        if (s.stopMode == BRAKE) {
+            brakeMotors();
+        } else if (s.stopMode == STOP) {
+            stopMotors();
+        } 
+
+        return;
     }
+
+    runStateLogic(s, justEntered);
 }

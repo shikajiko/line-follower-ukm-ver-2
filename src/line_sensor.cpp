@@ -1,12 +1,16 @@
 #include "IO.h"
 #include "line_sensor.h"
 #include "Arduino.h"
+#include <Preferences.h>
+#include <strings.h>
 
 static uint16_t line_sensor_raw[16] = {0};
 static uint8_t line_sensor_digital[16] = {0};
 static uint16_t line_sensor_max[16] = {0};
 static uint16_t line_sensor_min[16] = {0};
 static uint16_t line_sensor_threshold[16] = {0};
+static Preferences saved_calibration;
+static bool is_calibration_loaded = false;
 
 static void selectMUXChannel(uint8_t channel) {
   channel = channel & 0x0F;
@@ -192,11 +196,32 @@ void calibrateLineSensorsAuto() {
   }
 }
 
+void saveCalibration() {
+  saved_calibration.begin("calibration", false);
+  for (int i = 0; i < 16; i++) {
+    saved_calibration.putFloat(("thresh" + String(i)).c_str(), line_sensor_threshold[i]);
+  }
+  saved_calibration.end();
+}
+
+void loadCalibration() {
+  saved_calibration.begin("calibration", true);
+  for (int i = 0; i < 16; i++) {
+    line_sensor_threshold[i] = saved_calibration.getFloat(("thresh" + String(i)).c_str(), 0.);
+  }
+  saved_calibration.end();
+  is_calibration_loaded = true;
+}
+
 void lineSensorCalibrationBegin() {
   for (int i = 0; i < 16; i++) {
     line_sensor_max[i] = 0;
     line_sensor_min[i] = 4095;
   }
+}
+
+bool isCalibrationLoaded() {
+  return is_calibration_loaded;
 }
 
 void lineSensorCalibrationUpdate() {
@@ -214,4 +239,5 @@ void lineSensorCalibrationEnd() {
   for (int i = 0; i < 16; i++) {
     line_sensor_threshold[i] = (line_sensor_max[i] + line_sensor_min[i]) / 2;
   }
+  saveCalibration();
 }

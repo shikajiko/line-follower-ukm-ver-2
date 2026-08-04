@@ -20,4 +20,8 @@ void lineSensorCalibrationBegin();
 void lineSensorCalibrationUpdate();
 void lineSensorCalibrationEnd();
 
+void saveCalibration();
+void loadCalibration();
+bool isCalibrationLoaded();
+
 #endif // LINE_SENSOR_H

@@ -30,22 +30,25 @@ void moveMotors(int16_t left_speed, int16_t right_speed) {
     right_speed = -255;
   }
 
+  if (REVERSE_RIGHT_MOTOR) {
+    right_speed *= -1;
+  }
+
+  if (REVERSE_MOTOR) {
+    int temp = left_speed;
+    left_speed = right_speed;
+    right_speed = temp;
+  }
+
   setMotor(1, left_speed);
   setMotor(2, right_speed);
 }
 
 void stopMotors() {
-  ledcWrite(MOTOR1_IN1_CH, 0);
-  ledcWrite(MOTOR1_IN2_CH, 0);
-  ledcWrite(MOTOR2_IN3_CH, 0);
-  ledcWrite(MOTOR2_IN4_CH, 0);
-  digitalWrite(INH1_PIN, LOW);
-
-  motor1_speed = 0;
-  motor2_speed = 0;
+  moveMotors(0, 0);
 }
 
-void followLinePID() {
+void followLinePID(bool straight) {
   if (!isPIDEnabled()) {
     stopMotors();
     return;
@@ -61,7 +64,7 @@ void followLinePID() {
   }
   pid_last_update_ms = now;
 
-  const float line_position = calculateLinePosition();
+  const float line_position = calculateLinePosition(straight);
 
   line_detected = isLineDetected();
 
@@ -89,4 +92,10 @@ void followLinePID() {
 
   moveMotors(left_speed, right_speed);
   displayPIDDebug(line_position, correction, right_speed, left_speed, true);
+}
+
+void brakeMotors()
+{
+    moveMotors(-255, -255);
+    moveMotors(0, 0);
 }

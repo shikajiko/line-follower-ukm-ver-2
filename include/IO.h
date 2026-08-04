@@ -17,7 +17,7 @@
 // Ganti nilai BUTTON_ACTIVE_HIGH ini saja untuk troubleshooting:
 //   true  = tombol active-HIGH  -> idle LOW,  ditekan HIGH (pull-DOWN)
 //   false = tombol active-LOW   -> idle HIGH, ditekan LOW  (pull-UP)
-#define BUTTON_ACTIVE_HIGH false
+#define BUTTON_ACTIVE_HIGH true
 
 #if BUTTON_ACTIVE_HIGH
 #define BUTTON_PRESSED HIGH        // level saat tombol ditekan
@@ -28,6 +28,9 @@
 #define BUTTON_RELEASED HIGH
 #define BUTTON_PINMODE INPUT_PULLUP
 #endif
+
+#define REVERSE_MOTOR true
+#define REVERSE_RIGHT_MOTOR true
 
 #define IN1_PIN 35
 #define IN2_PIN 36
