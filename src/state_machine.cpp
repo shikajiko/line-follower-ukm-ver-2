@@ -6,8 +6,9 @@
 #include "display.h"
 #include "line_sensor.h"
 #include "mission.h"
+#include "web_server.h"
 
-#define PID_TEST_DRIVE_MS 250u;
+#define PID_TEST_DRIVE_MS 250u
 
 uint8_t current_state = STATE_IDLE;
 bool pid_menu_active = false;
@@ -30,6 +31,10 @@ void runStateMachine() {
     loadCalibration();
   }
 
+  if (!isMissionLoaded()) {
+    loadMissionsFromNVS();
+  }
+
   bool btn3_poweroff = buttonHeld(BTN_3, 3000);
 
   if (isButtonDown(BTN_3) && current_state != STATE_PID_TUNING) {
@@ -48,8 +53,10 @@ void runStateMachine() {
     }
   }
 
+  bool btn1_run_webserver = buttonHeld(BTN_1, 1500);
   bool btn2_pid_tuning = buttonHeld(BTN_2, 1000);
   bool btn4_line_debug = buttonHeld(BTN_4, 1000);
+
   static uint8_t last_state = STATE_IDLE;
 
   if (current_state != STATE_PID_TUNING) {
@@ -124,10 +131,15 @@ void runStateMachine() {
   case STATE_IDLE: {
     resetMissionState();
     disablePID();
-    displayOLED("IDLE", "BTN1=START", "BTN4=CALIBRATE", "");
+    displayOLED("BTN1=START", "BTN1-HOLD=CREATE MISSION", "BTN2-HOLD=PID TUNING", "BTN4=CALIBRATE");
 
     if (isButtonDown(BTN_1)) {
-      current_state = STATE_RUN_MISSION;
+      if (btn1_run_webserver) {
+        current_state = STATE_WEB_SERVER;
+      }
+      else if (isButtonReleased(BTN_1)) {
+        current_state = STATE_RUN_MISSION;
+      }
     }
     break;
   }
@@ -309,7 +321,7 @@ void runStateMachine() {
 
     if (pid_test_active) {
       enablePID();
-      followLinePID(false);
+      followLinePID(false, false);
     } else if (isPIDEnabled()) {
       disablePID();
       stopMotors();
@@ -348,6 +360,11 @@ void runStateMachine() {
     }
     break;
   }
+
+  case STATE_WEB_SERVER:
+    enableHotspot();
+    handleMissionWebServer();
+    break;
 
   default:
     displayOLED("ERROR", "Unknown state", "", "");

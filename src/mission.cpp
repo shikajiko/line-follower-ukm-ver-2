@@ -100,8 +100,7 @@ bool checkStateObjective(const MissionState &s) {
     return false;
 }
 
-// LINE_MODE, DRIVE_MODE, LSPEED, RSPEED, CONDITION, THRESHOLD, MASKLEFT, MASKRIGHT, MASKMODE, STOPMODE
-MissionState missionStates[] = {
+MissionState missionStates[MAX_MISSIONS] = {
     {LINE_BLACK, PID_STRAIGHT, 135, 140, COND_DIST_GT, 450, 0b11111100, 0b00111111, MASK_OR, STOP},
     {LINE_BLACK, DIRECT_MOVE, -140, 140, COND_DIST_GT, 80, 0b00000000, 0b00011111, MASK_OR, STOP},
     {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 150, 0b11111100, 0b00111111, MASK_OR, NONE},
@@ -109,7 +108,7 @@ MissionState missionStates[] = {
     {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 1000, 0b11111100, 0b00111111, MASK_OR, NONE},
 };
 
-const int NUM_STATES = sizeof(missionStates) / sizeof(missionStates[0]);
+int NUM_STATES = 5;
 
 void runMission() {
     dist_encoder = (readEncoder(1) + readEncoder(2)) / 2;
