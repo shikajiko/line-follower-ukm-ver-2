@@ -137,11 +137,11 @@ void resetPIDValues() {
   resetPID();
 }
 
-float calculateLinePosition(bool straight) {
+float calculateLinePosition(bool priotize_straight, bool is_inverted) {
   int start = 0;
   int end = 16;
 
-  if (straight) {
+  if (priotize_straight) {
     start = 4;
     end = 12;
   }
@@ -149,7 +149,7 @@ float calculateLinePosition(bool straight) {
 
   float line_error = 0.0f;
   for (int i = start; i < end; i++) {
-    if (getLineSensorDigital(i)) {
+    if (is_inverted != getLineSensorDigital(i)) {
       line_error += LINE_SENSOR_GAIN[i];
     }
   }

@@ -71,13 +71,20 @@ void runStateLogic(const MissionState &s, bool justEntered) {
         mission_timer = millis();
     }
 
-    switch (s.mode) {
+    bool is_inverted = false;
+
+    switch (s.lineMode) {
+        case LINE_WHITE: is_inverted = true; break;
+        default: break;
+    }
+
+    switch (s.driveMode) {
         case DIRECT_MOVE:
          displayMissionInfo(current_mission, readEncoder(1), readEncoder(2), s);
          moveMotors(s.leftSpeed, s.rightSpeed); 
          break;
-        case PID_STRAIGHT: followLinePID(true); break;
-        case PID: followLinePID(false); break;
+        case PID_STRAIGHT: followLinePID(true, is_inverted); break;
+        case PID: followLinePID(false, is_inverted); break;
     }
 }
 
@@ -93,13 +100,13 @@ bool checkStateObjective(const MissionState &s) {
     return false;
 }
 
-// MODE, LSPEED, RSPEED, CONDITION, THRESHOLD, MASKLEFT, MASKRIGHT, MASKMODE, STOPMODE
+// LINE_MODE, DRIVE_MODE, LSPEED, RSPEED, CONDITION, THRESHOLD, MASKLEFT, MASKRIGHT, MASKMODE, STOPMODE
 MissionState missionStates[] = {
-    {PID_STRAIGHT, 135, 140, COND_DIST_GT, 450, 0b11111100, 0b00111111, MASK_OR, STOP},
-    {DIRECT_MOVE, -140, 140, COND_DIST_GT, 80, 0b00000000, 0b00011111, MASK_OR, STOP},
-    {PID, 100, 100, COND_DIST_GT, 150, 0b11111100, 0b00111111, MASK_OR, NONE},
-    {PID_STRAIGHT, 100, 100, COND_SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE},
-    {PID, 100, 100, COND_DIST_GT, 1000, 0b11111100, 0b00111111, MASK_OR, NONE},
+    {LINE_BLACK, PID_STRAIGHT, 135, 140, COND_DIST_GT, 450, 0b11111100, 0b00111111, MASK_OR, STOP},
+    {LINE_BLACK, DIRECT_MOVE, -140, 140, COND_DIST_GT, 80, 0b00000000, 0b00011111, MASK_OR, STOP},
+    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 150, 0b11111100, 0b00111111, MASK_OR, NONE},
+    {LINE_BLACK, PID_STRAIGHT, 100, 100, COND_SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE},
+    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 1000, 0b11111100, 0b00111111, MASK_OR, NONE},
 };
 
 const int NUM_STATES = sizeof(missionStates) / sizeof(missionStates[0]);

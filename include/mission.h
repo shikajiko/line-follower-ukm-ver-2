@@ -14,6 +14,11 @@ enum DriveMode {
     PID
 };
 
+enum LineMode {
+    LINE_BLACK, 
+    LINE_WHITE
+};
+
 enum ConditionType {
     COND_ENCODER1_GT,
     COND_ENCODER2_GT,
@@ -30,7 +35,8 @@ enum StopMode {
 };
 
 struct MissionState {
-    DriveMode mode;
+    LineMode lineMode;
+    DriveMode driveMode;
     int leftSpeed, rightSpeed;
 
     ConditionType condition;
@@ -38,13 +44,13 @@ struct MissionState {
 
     uint8_t sensorRight;
     uint8_t sensorLeft;
+
     MaskMode maskMode;
     StopMode stopMode;
 };
 
-uint8_t MaskSensor(uint8_t maskLeft, uint8_t maskRight, uint8_t mode);
+uint8_t MaskSensor(uint8_t maskLeft, uint8_t maskRight, MaskMode mode);
 
-void stateTimer(uint32_t timerMs);
 void runStateLogic(const MissionState &s, bool justEntered);
 bool checkStateObjective(const MissionState &s);
 void runMission();

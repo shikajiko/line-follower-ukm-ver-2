@@ -48,7 +48,7 @@ void stopMotors() {
   moveMotors(0, 0);
 }
 
-void followLinePID(bool straight) {
+void followLinePID(bool prioritize_straight, bool is_inverted) {
   if (!isPIDEnabled()) {
     stopMotors();
     return;
@@ -64,7 +64,7 @@ void followLinePID(bool straight) {
   }
   pid_last_update_ms = now;
 
-  const float line_position = calculateLinePosition(straight);
+  const float line_position = calculateLinePosition(prioritize_straight, is_inverted);
 
   line_detected = isLineDetected();
 
