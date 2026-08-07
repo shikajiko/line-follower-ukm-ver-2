@@ -61,5 +61,5 @@ void loop() {
   // runTestSequence();
   runStateMachine();
   // Small delay to prevent overwhelming the CPU
-  delay(50);
+  delay(1);
 }

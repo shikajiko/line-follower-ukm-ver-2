@@ -114,7 +114,7 @@ static void selectMUXChannel(uint8_t channel) {
     break;
   }
 
-  delayMicroseconds(100);
+  delayMicroseconds(5);
 }
 
 static uint16_t readLineSensor(uint8_t channel) {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mission Sequence Editor</title>
+<title>LINE FOLLOWER MISSION</title>
 <style>
   :root{
     --bg: #14171c;
@@ -138,7 +138,6 @@
 
   .form-actions{display:flex; gap:10px; margin-top:20px; padding-top:16px; border-top:1px solid var(--border); flex-wrap:wrap;}
 
-  /* Sensor bit grid */
   .bitfield{display:flex; flex-direction:column; gap:6px;}
   .bitfield-row{display:flex; gap:2px;}
   .bit-toggle{
@@ -190,26 +189,25 @@
 <header>
   <div class="brand">
     <span class="dot"></span>
-    <h1>Mission Sequence Editor</h1>
+    <h1>Line Follower Mission</h1>
     <span class="sub">MissionState[] · runMission()</span>
   </div>
   <div class="toolbar">
-    <button class="ghost" id="btnGuide">Field Guide</button>
-    <button class="ghost" id="btnNew">+ New Mission</button>
-    <button id="btnLoad">Load .bin</button>
-    <button id="btnSave">Save .bin</button>
-    <button id="btnExportCpp">Export Code</button>
+    <button class="ghost" id="btnGuide">Petunjuk</button>
+    <button class="ghost" id="btnNew">+ Misi Baru</button>
+    <button id="btnLoad">Load mission</button>
+    <button id="btnSave">Save mission</button>
   </div>
 </header>
 
-<input type="file" id="fileInput" accept=".bin,application/octet-stream">
+<input type="file" id="fileInput" accept=".json,application/json">
 
 <main>
   <section class="panel">
-    <p class="panel-title">Sequence <span class="count" id="missionCount">0</span></p>
+    <p class="panel-title">Urutan misi <span class="count" id="missionCount">0</span></p>
     <ul class="seq" id="seqList"></ul>
     <div class="empty-state" id="emptyState">
-      No missions yet.<br>Click "+ New Mission" to add the first state.
+      Belum ada misi.<br>Click "+ Misi Baru" untuk menambahkan misi.
     </div>
   </section>
 
@@ -346,9 +344,9 @@
     <h3 data-section="drive">2. LINE_MODE</h3>
     <p>LINE_BLACK untuk mengikuti garis hitam, LINE_WHITE untuk mengikuti garis putih</p>
     <h3 data-section="drive">3. LEFTSPEED</h3>
-    <p>kecepatan motor kiri. nilai negatif berarti berputar ke belakang. tidak berpengaruh saat mode PID</p>
+    <p>kecepatan motor kiri. nilai negatif berarti berputar ke belakang.</p>
     <h3 data-section="drive">4. RIGHTSPEED</h3>
-    <p>kecepatan motor kanan. nilai negatif berarti berputar ke belakang. tidak berpengaruh saat mode PID</p>
+    <p>kecepatan motor kanan. nilai negatif berarti berputar ke belakang.</p>
     <h3 data-section="condition">5. CONDITION</h3>
     <p>COND_ENCODER1_GT: misi selesai saat roda kiri berputar sebanyak threshold tertentu. COND_ENCODER2_GT: misi selesai saat roda kiri berputar sebanyak threshold tertentu. COND_DIST_GT: misi selesai saat kedua roda berputar sebanyak threshold. COND_SENSOR_MASK: misi selesai saat sensor mendeteksi garis sesuai dengan SENSOR MASK. SENSOR MASK tidak berpegaruh selain mode COND_SENSOR_MASK. COND_TIMER: misi selesai setelah waktu tertentu.</p>
     <h3 data-section="condition">6. CONDITION_THRESHOLD</h3>
@@ -370,7 +368,6 @@
 (function(){
   "use strict";
 
-  // ---- enum ↔ ordinal tables (must mirror mission.h exactly) ----
   const ENUMS = {
     lineMode:   ['LINE_BLACK','LINE_WHITE'],
     driveMode:  ['DIRECT_MOVE','PID_STRAIGHT','PID'],
@@ -396,7 +393,7 @@
     bitsLeft: $('bitsLeft'), bitsRight: $('bitsRight'),
   };
 
-  let bitsLeft = new Array(8).fill(0);   // index 0 = bit7 (MSB) ... index 7 = bit0 (LSB)
+  let bitsLeft = new Array(8).fill(0);
   let bitsRight = new Array(8).fill(0);
 
   function buildBitfield(container, bitsArr, onChange){
@@ -404,7 +401,7 @@
     const row = document.createElement('div');
     row.className = 'bitfield-row';
     for(let i = 0; i < 8; i++){
-      const bitPos = 7 - i; // display MSB→LSB left to right
+      const bitPos = 7 - i;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'bit-toggle';
@@ -493,17 +490,37 @@
     });
   }
 
-  function updateApplicability(){
+   function updateApplicability(){
     const driveMode = $('f_driveMode').value;
     const condition = $('f_condition').value;
-    $('fld_leftSpeed').style.opacity = driveMode === 'PID' ? .4 : 1;
-    $('fld_rightSpeed').style.opacity = driveMode === 'PID' ? .4 : 1;
+
+    // Sensor applicability
     $('fs_sensor').classList.toggle('na', condition !== 'COND_SENSOR_MASK');
-    $('fld_threshold').style.opacity = condition === 'COND_SENSOR_MASK' ? .4 : 1;
+    $('fld_threshold').style.opacity =
+        condition === 'COND_SENSOR_MASK' ? .4 : 1;
+
     const unit = $('thresholdUnit');
-    unit.textContent = condition === 'COND_TIMER' ? 'ms' :
-      (condition === 'COND_ENCODER1_GT' || condition === 'COND_ENCODER2_GT' || condition === 'COND_DIST_GT') ? 'ticks' : 'int32';
-  }
+    unit.textContent =
+        condition === 'COND_TIMER' ? 'ms' :
+        (condition === 'COND_ENCODER1_GT' ||
+        condition === 'COND_ENCODER2_GT' ||
+        condition === 'COND_DIST_GT') ? 'ticks' : 'int32';
+
+    // ----- Drive mode UI -----
+    const leftLabel = document.querySelector('label[for="f_leftSpeed"]');
+    const rightInput = $('f_rightSpeed');
+    const rightField = $('fld_rightSpeed');
+
+    if (driveMode === 'PID' || driveMode === 'PID_STRAIGHT') {
+        leftLabel.textContent = 'baseSpeed';
+        rightInput.disabled = true;
+        rightField.style.opacity = '0.4';
+    } else {
+        leftLabel.textContent = 'leftSpeed';
+        rightInput.disabled = false;
+        rightField.style.opacity = '1';
+    }
+    }
 
   function updatePolarityHints(){
     const white = $('f_lineMode').value === 'LINE_WHITE';
@@ -610,7 +627,17 @@
     render();
   });
 
-  els.btnNew.addEventListener('click', () => { resetForm(); deselect(); });
+  els.btnNew.addEventListener('click', () => {
+    const blank = {
+      id: uid(), label: 'Untitled mission', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
+      leftSpeed:0, rightSpeed:0, condition:'COND_IMMEDIATE', condition_threshold:0,
+      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE'
+    };
+    missions.push(blank);
+    selectMission(blank.id);
+    showToast('Blank mission added');
+  });
+
   els.btnClear.addEventListener('click', () => { resetForm(); deselect(); });
 
   els.btnDuplicate.addEventListener('click', () => {
@@ -630,61 +657,6 @@
     showToast('Mission deleted');
   });
 
-  // ---- Binary format: fixed 19-byte record per mission, little-endian ----
-  // offset 0  lineMode        uint8
-  // offset 1  driveMode       uint8
-  // offset 2  leftSpeed       int32  (LE)
-  // offset 6  rightSpeed      int32  (LE)
-  // offset 10 condition       uint8
-  // offset 11 condition_threshold int32 (LE)
-  // offset 15 sensorRight     uint8
-  // offset 16 sensorLeft      uint8
-  // offset 17 maskMode        uint8
-  // offset 18 stopMode        uint8
-  const RECORD_SIZE = 19;
-
-  function packBinary(list){
-    const buf = new ArrayBuffer(RECORD_SIZE * list.length);
-    const view = new DataView(buf);
-    list.forEach((m, i) => {
-      const o = i * RECORD_SIZE;
-      view.setUint8(o+0, ENUMS.lineMode.indexOf(m.lineMode));
-      view.setUint8(o+1, ENUMS.driveMode.indexOf(m.driveMode));
-      view.setInt32(o+2, m.leftSpeed, true);
-      view.setInt32(o+6, m.rightSpeed, true);
-      view.setUint8(o+10, ENUMS.condition.indexOf(m.condition));
-      view.setInt32(o+11, m.condition_threshold, true);
-      view.setUint8(o+15, m.sensorRight);
-      view.setUint8(o+16, m.sensorLeft);
-      view.setUint8(o+17, ENUMS.maskMode.indexOf(m.maskMode));
-      view.setUint8(o+18, ENUMS.stopMode.indexOf(m.stopMode));
-    });
-    return new Uint8Array(buf);
-  }
-
-  function unpackBinary(bytes){
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const count = Math.floor(bytes.length / RECORD_SIZE);
-    const out = [];
-    for(let i = 0; i < count; i++){
-      const o = i * RECORD_SIZE;
-      out.push({
-        label: 'Mission ' + (i+1),
-        lineMode: ENUMS.lineMode[view.getUint8(o+0)] || 'LINE_BLACK',
-        driveMode: ENUMS.driveMode[view.getUint8(o+1)] || 'DIRECT_MOVE',
-        leftSpeed: view.getInt32(o+2, true),
-        rightSpeed: view.getInt32(o+6, true),
-        condition: ENUMS.condition[view.getUint8(o+10)] || 'COND_IMMEDIATE',
-        condition_threshold: view.getInt32(o+11, true),
-        sensorRight: view.getUint8(o+15),
-        sensorLeft: view.getUint8(o+16),
-        maskMode: ENUMS.maskMode[view.getUint8(o+17)] || 'MASK_AND',
-        stopMode: ENUMS.stopMode[view.getUint8(o+18)] || 'NONE',
-      });
-    }
-    return out;
-  }
-
   function triggerDownload(blob, filename){
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -693,34 +665,118 @@
     URL.revokeObjectURL(url);
   }
 
-  els.btnSave.addEventListener('click', () => {
-    const bytes = packBinary(missions);
-    triggerDownload(new Blob([bytes], {type:'application/octet-stream'}), 'missions.bin');
-    showToast(`Saved missions.bin (${bytes.length} bytes)`);
-  });
+  // ---- Load/save use JSON files on disk (no robot connection needed) ----
+// ---- Upload missions directly to the robot ----
+els.btnSave.addEventListener('click', async () => {
+    const exportList = missions.map(({ id, ...rest }) => rest);
 
-  els.btnLoad.addEventListener('click', () => els.fileInput.click());
+    const payload = {
+        version: 1,
+        missions: exportList
+    };
+
+    try {
+        const response = await fetch("/save", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+
+        showToast(`Uploaded ${missions.length} mission(s) to robot`);
+    }
+    catch (err) {
+        console.error(err);
+        alert("Upload failed:\n" + err.message);
+    }
+});
+
+els.btnLoad.addEventListener("click", async () => {
+    try {
+        const response = await fetch("/load");
+        if (!response.ok)
+            throw new Error(await response.text());
+
+        const data = await response.json();
+        const list = Array.isArray(data) ? data : data.missions;
+
+        if (!Array.isArray(list))
+            throw new Error("Invalid mission format");
+
+        missions = list.map((m, i) => ({
+            id: uid(),
+            label: m.label || `Mission ${i + 1}`,
+            driveMode: m.driveMode,
+            lineMode: m.lineMode,
+            leftSpeed: clampInt(m.leftSpeed),
+            rightSpeed: clampInt(m.rightSpeed),
+            condition: m.condition,
+            condition_threshold: clampInt(m.condition_threshold),
+            sensorLeft: clampInt(m.sensorLeft) & 0xFF,
+            sensorRight: clampInt(m.sensorRight) & 0xFF,
+            maskMode: m.maskMode,
+            stopMode: m.stopMode
+        }));
+
+        deselect();
+        render();
+        showToast(`Loaded ${missions.length} mission(s) from robot`);
+    }
+    catch (err) {
+        alert("Load failed:\n" + err.message);
+    }
+});
+
   els.fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if(!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       try{
-        const bytes = new Uint8Array(reader.result);
-        if(bytes.length % RECORD_SIZE !== 0) throw new Error(`File size ${bytes.length} is not a multiple of ${RECORD_SIZE} bytes`);
-        const parsed = unpackBinary(bytes);
-        missions = parsed.map(m => ({ id: uid(), ...m }));
+        const data = JSON.parse(reader.result);
+        const list = Array.isArray(data) ? data : data.missions;
+        if(!Array.isArray(list)) throw new Error('JSON must be an array of missions, or an object with a "missions" array');
+
+        missions = list.map((m, i) => {
+          if(!ENUMS.driveMode.includes(m.driveMode)) throw new Error(`mission ${i}: invalid driveMode "${m.driveMode}"`);
+          if(!ENUMS.lineMode.includes(m.lineMode)) throw new Error(`mission ${i}: invalid lineMode "${m.lineMode}"`);
+          if(!ENUMS.condition.includes(m.condition)) throw new Error(`mission ${i}: invalid condition "${m.condition}"`);
+          if(!ENUMS.maskMode.includes(m.maskMode)) throw new Error(`mission ${i}: invalid maskMode "${m.maskMode}"`);
+          if(!ENUMS.stopMode.includes(m.stopMode)) throw new Error(`mission ${i}: invalid stopMode "${m.stopMode}"`);
+          return {
+            id: uid(),
+            label: m.label || ('Mission ' + (i + 1)),
+            driveMode: m.driveMode,
+            lineMode: m.lineMode,
+            leftSpeed: clampInt(m.leftSpeed),
+            rightSpeed: clampInt(m.rightSpeed),
+            condition: m.condition,
+            condition_threshold: clampInt(m.condition_threshold),
+            sensorLeft: clampInt(m.sensorLeft) & 0xFF,
+            sensorRight: clampInt(m.sensorRight) & 0xFF,
+            maskMode: m.maskMode,
+            stopMode: m.stopMode,
+          };
+        });
+
         deselect();
-        showToast(`Loaded ${missions.length} mission(s)`);
+        showToast(`Loaded ${missions.length} mission(s) from ${file.name}`);
       }catch(err){
-        alert('Could not load file: ' + err.message);
+        alert('Load failed: ' + err.message);
+      }finally{
+        els.fileInput.value = '';
       }
-      els.fileInput.value = '';
     };
-    reader.readAsArrayBuffer(file);
+    reader.onerror = () => alert('Load failed: could not read file');
+    reader.readAsText(file);
   });
 
-  // ---- Export: C++ array literal, or ESP32 Preferences backend code ----
+
   els.btnExportCpp.addEventListener('click', () => {
     els.exportText.value = buildExport(els.exportFormat.value);
     els.exportDialog.showModal();
@@ -765,84 +821,8 @@
   }
 
   function buildEsp32Backend(){
-    return `// Auto-generated: read/write MissionState[] to ESP32 NVS via the Preferences library.
-// Uses a fixed ${RECORD_SIZE}-byte packed record per mission (matches this editor's .bin export),
-// so it works regardless of struct padding / enum size on your compiler — no ArduinoJson needed.
-//
-// Record layout (little-endian):
-//   [0]  lineMode            uint8
-//   [1]  driveMode           uint8
-//   [2]  leftSpeed           int32
-//   [6]  rightSpeed          int32
-//   [10] condition           uint8
-//   [11] condition_threshold int32
-//   [15] sensorRight         uint8
-//   [16] sensorLeft          uint8
-//   [17] maskMode            uint8
-//   [18] stopMode            uint8
-
-#include <Preferences.h>
-#include "mission.h"
-
-#define MISSION_RECORD_SIZE ${RECORD_SIZE}
-#define MISSION_PREF_NAMESPACE "missions"
-#define MISSION_PREF_KEY "data"
-#define MISSION_PREF_COUNT_KEY "count"
-
-void saveMissions(Preferences &prefs, const MissionState *missions, int count) {
-    prefs.begin(MISSION_PREF_NAMESPACE, false);
-    uint8_t *buf = (uint8_t *)malloc(count * MISSION_RECORD_SIZE);
-    for (int i = 0; i < count; i++) {
-        uint8_t *p = buf + i * MISSION_RECORD_SIZE;
-        const MissionState &m = missions[i];
-        p[0] = (uint8_t)m.lineMode;
-        p[1] = (uint8_t)m.driveMode;
-        memcpy(p + 2, &m.leftSpeed, 4);
-        memcpy(p + 6, &m.rightSpeed, 4);
-        p[10] = (uint8_t)m.condition;
-        memcpy(p + 11, &m.condition_threshold, 4);
-        p[15] = m.sensorRight;
-        p[16] = m.sensorLeft;
-        p[17] = (uint8_t)m.maskMode;
-        p[18] = (uint8_t)m.stopMode;
-    }
-    prefs.putBytes(MISSION_PREF_KEY, buf, count * MISSION_RECORD_SIZE);
-    prefs.putInt(MISSION_PREF_COUNT_KEY, count);
-    free(buf);
-    prefs.end();
-}
-
-// Returns the number of missions read. Caller owns outMissions (size maxCount).
-int loadMissions(Preferences &prefs, MissionState *outMissions, int maxCount) {
-    prefs.begin(MISSION_PREF_NAMESPACE, true);
-    int count = prefs.getInt(MISSION_PREF_COUNT_KEY, 0);
-    if (count > maxCount) count = maxCount;
-    size_t needed = count * MISSION_RECORD_SIZE;
-    uint8_t *buf = (uint8_t *)malloc(needed);
-    prefs.getBytes(MISSION_PREF_KEY, buf, needed);
-    for (int i = 0; i < count; i++) {
-        uint8_t *p = buf + i * MISSION_RECORD_SIZE;
-        MissionState &m = outMissions[i];
-        m.lineMode = (LineMode)p[0];
-        m.driveMode = (DriveMode)p[1];
-        memcpy(&m.leftSpeed, p + 2, 4);
-        memcpy(&m.rightSpeed, p + 6, 4);
-        m.condition = (ConditionType)p[10];
-        memcpy(&m.condition_threshold, p + 11, 4);
-        m.sensorRight = p[15];
-        m.sensorLeft = p[16];
-        m.maskMode = (MaskMode)p[17];
-        m.stopMode = (StopMode)p[18];
-    }
-    free(buf);
-    prefs.end();
-    return count;
-}
-
-// Example:
-// Preferences prefs;
-// MissionState missions[16];
-// int n = loadMissions(prefs, missions, 16);
+    return `// See web_server.cpp on the device for the live implementation.
+// This export is just a reference copy of the pack/unpack logic.
 `;
   }
 

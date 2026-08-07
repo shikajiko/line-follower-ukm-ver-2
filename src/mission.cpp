@@ -83,8 +83,8 @@ void runStateLogic(const MissionState &s, bool justEntered) {
          displayMissionInfo(current_mission, readEncoder(1), readEncoder(2), s);
          moveMotors(s.leftSpeed, s.rightSpeed); 
          break;
-        case PID_STRAIGHT: followLinePID(true, is_inverted); break;
-        case PID: followLinePID(false, is_inverted); break;
+        case PID_STRAIGHT: followLinePID(true, is_inverted, s.leftSpeed); break;
+        case PID: followLinePID(false, is_inverted, s.leftSpeed); break;
     }
 }
 

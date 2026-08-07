@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define MAX_MISSIONS 32
+#define MAX_MISSIONS 200
 
 enum LineMode { LINE_BLACK, LINE_WHITE };
 enum DriveMode { DIRECT_MOVE, PID_STRAIGHT, PID };

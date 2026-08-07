@@ -4,25 +4,28 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "mission.h"
+#include <ArduinoJson.h>
 
-#define AP_SSID "LINE_FOLLOWER_1"
+#define AP_SSID "LF_1"
 #define AP_PASSWORD "icH12o2026"
 
-#define MISSION_RECORD_SIZE 19
+#define MISSION_RECORD_SIZE 15
 
 // HTTP route handlers
 void handleIndex();
+void handleUpdateMission();
 void handleLoadMission();
-void handleSaveMission();
 void handleNotFound();
 
 // Lifecycle
-void enableHotspot();          
-void startMissionWebServer();  
-void handleMissionWebServer(); 
-void loadMissionsFromNVS();
+void enableHotspot();
+void startMissionWebServer();
+void handleMissionWebServer();
 
-bool isWebserverStarted();
+bool loadMissionFile();
+bool isWebServerStarted();
 bool isMissionLoaded();
+bool parseMissionJSON(const JsonDocument &doc);
+bool mountFilesystem();
 
 #endif

@@ -48,7 +48,7 @@ void stopMotors() {
   moveMotors(0, 0);
 }
 
-void followLinePID(bool prioritize_straight, bool is_inverted) {
+void followLinePID(bool prioritize_straight, bool is_inverted, int16_t baseSpeed) {
   if (!isPIDEnabled()) {
     stopMotors();
     return;
@@ -87,8 +87,8 @@ void followLinePID(bool prioritize_straight, bool is_inverted) {
     prev_pid_correction = correction;
   }
 
-  int16_t left_speed = static_cast<int16_t>(getPIDBaseSpeed() - correction);
-  int16_t right_speed = static_cast<int16_t>(getPIDBaseSpeed() + correction);
+  int16_t left_speed = static_cast<int16_t>(baseSpeed - correction);
+  int16_t right_speed = static_cast<int16_t>(baseSpeed + correction);
 
   moveMotors(left_speed, right_speed);
   displayPIDDebug(line_position, correction, right_speed, left_speed, true);

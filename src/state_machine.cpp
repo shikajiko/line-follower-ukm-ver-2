@@ -32,7 +32,7 @@ void runStateMachine() {
   }
 
   if (!isMissionLoaded()) {
-    loadMissionsFromNVS();
+    loadMissionFile();
   }
 
   bool btn3_poweroff = buttonHeld(BTN_3, 3000);
@@ -131,15 +131,18 @@ void runStateMachine() {
   case STATE_IDLE: {
     resetMissionState();
     disablePID();
-    displayOLED("BTN1=START", "BTN1-HOLD=CREATE MISSION", "BTN2-HOLD=PID TUNING", "BTN4=CALIBRATE");
+    displayOLED("BTN1=START", "BTN1-HOLD=MISSION", "BTN2-HOLD=PID", "BTN4=CALIBRATE");
 
     if (isButtonDown(BTN_1)) {
       if (btn1_run_webserver) {
         current_state = STATE_WEB_SERVER;
+        return;
       }
-      else if (isButtonReleased(BTN_1)) {
-        current_state = STATE_RUN_MISSION;
-      }
+    }
+
+    if (isButtonReleased(BTN_1)) {
+      current_state = STATE_RUN_MISSION;
+      return;
     }
     break;
   }
@@ -321,7 +324,7 @@ void runStateMachine() {
 
     if (pid_test_active) {
       enablePID();
-      followLinePID(false, false);
+      followLinePID(false, false, pid_base_speed);
     } else if (isPIDEnabled()) {
       disablePID();
       stopMotors();
