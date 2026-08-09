@@ -71,6 +71,7 @@ bool loadMissionFile()
 bool parseMissionJSON(const JsonDocument &doc)
 {
     JsonArrayConst missions;
+    int start = (doc["start_from"] | 1) - 1;
 
     if (doc.is<JsonArrayConst>())
     {
@@ -178,8 +179,12 @@ bool parseMissionJSON(const JsonDocument &doc)
             state.stopMode = NONE;
 
         NUM_STATES++;
+
+        state.is_checkpoint = m["is_checkpoint"];
     }
 
+    setCurrentMission(start);
+    updateStartIndex(start);
     return true;
 }
 
@@ -246,14 +251,12 @@ void handleUpdateMission()
         return;
     }
 
-    // Parse into missionStates[]
     if (!parseMissionJSON(doc))
     {
         webServer.send(400, "text/plain", "Invalid mission data");
         return;
     }
 
-    // Save the exact JSON that was received
     File file = LittleFS.open(MISSION_JSON_PATH, "w");
 
     if (!file)

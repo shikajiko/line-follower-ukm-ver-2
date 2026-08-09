@@ -71,6 +71,16 @@
   }
   .count{color:var(--teal);}
 
+  .start-from{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    margin:0 0 16px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--border);
+    border-radius:4px;
+  }
+  .start-from label{
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); white-space:nowrap;
+  }
+  .start-from input{width:80px; text-align:center;}
+
   .seq{list-style:none; margin:0; padding:0;}
   .seq-item{
     position:relative; margin:0; padding:10px 10px 10px 34px;
@@ -96,6 +106,7 @@
   }
   .badge.drive{color:var(--teal); border-color:#28504c;}
   .badge.stop-STOP, .badge.stop-BRAKE{color:var(--red); border-color:#5a3230;}
+  .badge.checkpoint{color:var(--amber); border-color:var(--amber-dim);}
 
   .seq-controls{position:absolute; right:8px; top:8px; display:none; gap:2px;}
   .seq-item:hover .seq-controls, .seq-item.active .seq-controls{display:flex;}
@@ -123,6 +134,12 @@
     appearance:none; -webkit-appearance:none;
     background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
     background-position: calc(100% - 16px) 14px, calc(100% - 11px) 14px; background-size:5px 5px; background-repeat:no-repeat;
+  }
+  .checkbox-field label{
+    flex-direction:row; align-items:center; gap:8px; cursor:pointer;
+  }
+  .checkbox-field input[type=checkbox]{
+    width:16px; height:16px; accent-color:var(--amber); cursor:pointer; flex:none;
   }
 
   fieldset{border:1px solid var(--border); border-radius:5px; padding:14px 16px 16px; margin:0; transition:opacity .15s;}
@@ -197,6 +214,7 @@
     <button class="ghost" id="btnNew">+ Misi Baru</button>
     <button id="btnLoad">Load mission</button>
     <button id="btnSave">Save mission</button>
+    <button id="btnExportJson">Download JSON</button>
   </div>
 </header>
 
@@ -204,6 +222,10 @@
 
 <main>
   <section class="panel">
+    <div class="start-from">
+      <label for="f_startFrom">Mulai dari misi:</label>
+      <input type="number" id="f_startFrom" value="1" min="1" step="1">
+    </div>
     <p class="panel-title">Urutan misi <span class="count" id="missionCount">0</span></p>
     <ul class="seq" id="seqList"></ul>
     <div class="empty-state" id="emptyState">
@@ -303,6 +325,12 @@
                 <option value="BRAKE">BRAKE</option>
               </select>
             </div>
+            <div class="field checkbox-field">
+              <label for="f_isCheckpoint">
+                <input type="checkbox" id="f_isCheckpoint">
+                is_checkpoint
+              </label>
+            </div>
           </div>
         </fieldset>
       </div>
@@ -359,6 +387,8 @@
     <p>MASK_AND: kondisi sensor harus sama persis dengan kedua sensor mask sebelum misi dianggap selesai. MASK_OR: misi selesai apabila salah satu sensor sesuai kondisi SENSOR MASK</p>
     <h3 data-section="stop">10. STOPMODE</h3>
     <p>kondisi robot setelah menyelesaikan misi. NONE berarti robot langsung masuk ke misi selanjutnya. STOP berarti robot akan berusaha berhenti. BRAKE berarti robot mengerem untuk pemberhentian yang lebih akurat.</p>
+    <h3 data-section="stop">11. IS_CHECKPOINT</h3>
+    <p>menandai apakah misi ini adalah checkpoint. Digunakan misalnya untuk menyimpan progres atau titik referensi robot, tidak mempengaruhi cara robot menyelesaikan misi ini.</p>
   </div>
 </dialog>
 
@@ -385,43 +415,55 @@
     formTitle: $('formTitle'), form: $('missionForm'),
     btnSaveMission: $('btnSaveMission'), btnDuplicate: $('btnDuplicate'), btnDelete: $('btnDelete'),
     btnClear: $('btnClear'), btnNew: $('btnNew'), btnLoad: $('btnLoad'), btnSave: $('btnSave'),
-    btnExportCpp: $('btnExportCpp'), fileInput: $('fileInput'),
+    btnExportCpp: $('btnExportCpp'), btnExportJson: $('btnExportJson'), fileInput: $('fileInput'),
     exportDialog: $('exportDialog'), exportText: $('exportText'), exportFormat: $('exportFormat'),
     btnCloseDialog: $('btnCloseDialog'), btnCopyExport: $('btnCopyExport'), btnDownloadExport: $('btnDownloadExport'),
     guideDialog: $('guideDialog'), btnGuide: $('btnGuide'), btnCloseGuide: $('btnCloseGuide'),
     toast: $('toast'),
     bitsLeft: $('bitsLeft'), bitsRight: $('bitsRight'),
+    f_startFrom: $('f_startFrom'),
   };
 
   let bitsLeft = new Array(8).fill(0);
   let bitsRight = new Array(8).fill(0);
-
-  function buildBitfield(container, bitsArr, onChange){
+  
+function buildBitfield(container, bitsArr, onChange){
     container.innerHTML = '';
+
     const row = document.createElement('div');
     row.className = 'bitfield-row';
+
     for(let i = 0; i < 8; i++){
-      const bitPos = 7 - i;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'bit-toggle';
-      btn.innerHTML = `${bitsArr[i]}<span class="n">${bitPos}</span>`;
-      btn.addEventListener('click', () => {
-        bitsArr[i] = bitsArr[i] ? 0 : 1;
-        btn.classList.toggle('on', !!bitsArr[i]);
-        btn.innerHTML = `${bitsArr[i]}<span class="n">${bitPos}</span>`;
-        onChange();
-      });
-      if(bitsArr[i]) btn.classList.add('on');
-      row.appendChild(btn);
+        const arrIndex = 7 - i;      // reverse UI only
+        const bitPos = arrIndex;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'bit-toggle';
+
+        btn.innerHTML = `${bitsArr[arrIndex]}<span class="n">${bitPos}</span>`;
+
+        btn.addEventListener('click', () => {
+            bitsArr[arrIndex] ^= 1;
+            btn.classList.toggle('on', !!bitsArr[arrIndex]);
+            btn.innerHTML = `${bitsArr[arrIndex]}<span class="n">${bitPos}</span>`;
+            onChange();
+        });
+
+        if(bitsArr[arrIndex])
+            btn.classList.add('on');
+
+        row.appendChild(btn);
     }
+
     container.appendChild(row);
+
     const readout = document.createElement('div');
     readout.className = 'bit-readout';
     container.appendChild(readout);
-    updateReadout(container, bitsArr);
-  }
 
+    updateReadout(container, bitsArr);
+}
   function updateReadout(container, bitsArr){
     const readout = container.querySelector('.bit-readout');
     const val = bitsToByte(bitsArr);
@@ -461,6 +503,7 @@
       sensorRight: bitsToByte(bitsRight),
       maskMode: $('f_maskMode').value,
       stopMode: $('f_stopMode').value,
+      is_checkpoint: $('f_isCheckpoint').checked,
     };
   }
 
@@ -476,6 +519,7 @@
     bitsRight = byteToBits(m.sensorRight);
     $('f_maskMode').value = m.maskMode;
     $('f_stopMode').value = m.stopMode;
+    $('f_isCheckpoint').checked = !!m.is_checkpoint;
     refreshBitfields();
     updateApplicability();
     updatePolarityHints();
@@ -486,7 +530,7 @@
     writeForm({
       label:'', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
       leftSpeed:0, rightSpeed:0, condition:'COND_IMMEDIATE', condition_threshold:0,
-      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE'
+      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false
     });
   }
 
@@ -571,6 +615,7 @@
       const li = document.createElement('li');
       li.className = 'seq-item' + (m.id === selectedId ? ' active' : '');
       const stopBadge = m.stopMode !== 'NONE' ? `<span class="badge stop-${m.stopMode}">${m.stopMode}</span>` : '';
+      const checkpointBadge = m.is_checkpoint ? `<span class="badge checkpoint">CHECKPOINT</span>` : '';
       li.innerHTML = `
         <span class="idx">${i+1}</span>
         <div class="label">${escapeHtml(m.label)}</div>
@@ -578,6 +623,7 @@
           <span class="badge drive">${m.driveMode}</span>
           <span class="badge">${m.condition}</span>
           ${stopBadge}
+          ${checkpointBadge}
         </div>
         <div class="seq-controls">
           <button type="button" class="tiny" data-act="up" title="Move up">↑</button>
@@ -631,7 +677,7 @@
     const blank = {
       id: uid(), label: 'Untitled mission', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
       leftSpeed:0, rightSpeed:0, condition:'COND_IMMEDIATE', condition_threshold:0,
-      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE'
+      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false
     };
     missions.push(blank);
     selectMission(blank.id);
@@ -665,15 +711,53 @@
     URL.revokeObjectURL(url);
   }
 
+  function buildMissionPayload(){
+    const exportList = missions.map(({ id, ...rest }) => rest);
+    return {
+      start_from: clampInt(els.f_startFrom.value) || 1,
+      version: 1,
+      missions: exportList
+    };
+  }
+
+  function applyLoadedPayload(data, sourceLabel){
+    const list = Array.isArray(data) ? data : data.missions;
+    if(!Array.isArray(list)) throw new Error('JSON must be an array of missions, or an object with a "missions" array');
+
+    missions = list.map((m, i) => {
+      if(!ENUMS.driveMode.includes(m.driveMode)) throw new Error(`mission ${i}: invalid driveMode "${m.driveMode}"`);
+      if(!ENUMS.lineMode.includes(m.lineMode)) throw new Error(`mission ${i}: invalid lineMode "${m.lineMode}"`);
+      if(!ENUMS.condition.includes(m.condition)) throw new Error(`mission ${i}: invalid condition "${m.condition}"`);
+      if(!ENUMS.maskMode.includes(m.maskMode)) throw new Error(`mission ${i}: invalid maskMode "${m.maskMode}"`);
+      if(!ENUMS.stopMode.includes(m.stopMode)) throw new Error(`mission ${i}: invalid stopMode "${m.stopMode}"`);
+      return {
+        id: uid(),
+        label: m.label || ('Mission ' + (i + 1)),
+        driveMode: m.driveMode,
+        lineMode: m.lineMode,
+        leftSpeed: clampInt(m.leftSpeed),
+        rightSpeed: clampInt(m.rightSpeed),
+        condition: m.condition,
+        condition_threshold: clampInt(m.condition_threshold),
+        sensorLeft: clampInt(m.sensorLeft) & 0xFF,
+        sensorRight: clampInt(m.sensorRight) & 0xFF,
+        maskMode: m.maskMode,
+        stopMode: m.stopMode,
+        is_checkpoint: !!m.is_checkpoint,
+      };
+    });
+
+    els.f_startFrom.value = (!Array.isArray(data) && Number.isFinite(parseInt(data.start_from, 10)))
+      ? clampInt(data.start_from) : 1;
+
+    deselect();
+    showToast(`Loaded ${missions.length} mission(s)${sourceLabel ? ' from ' + sourceLabel : ''}`);
+  }
+
   // ---- Load/save use JSON files on disk (no robot connection needed) ----
 // ---- Upload missions directly to the robot ----
 els.btnSave.addEventListener('click', async () => {
-    const exportList = missions.map(({ id, ...rest }) => rest);
-
-    const payload = {
-        version: 1,
-        missions: exportList
-    };
+    const payload = buildMissionPayload();
 
     try {
         const response = await fetch("/save", {
@@ -703,34 +787,18 @@ els.btnLoad.addEventListener("click", async () => {
             throw new Error(await response.text());
 
         const data = await response.json();
-        const list = Array.isArray(data) ? data : data.missions;
-
-        if (!Array.isArray(list))
-            throw new Error("Invalid mission format");
-
-        missions = list.map((m, i) => ({
-            id: uid(),
-            label: m.label || `Mission ${i + 1}`,
-            driveMode: m.driveMode,
-            lineMode: m.lineMode,
-            leftSpeed: clampInt(m.leftSpeed),
-            rightSpeed: clampInt(m.rightSpeed),
-            condition: m.condition,
-            condition_threshold: clampInt(m.condition_threshold),
-            sensorLeft: clampInt(m.sensorLeft) & 0xFF,
-            sensorRight: clampInt(m.sensorRight) & 0xFF,
-            maskMode: m.maskMode,
-            stopMode: m.stopMode
-        }));
-
-        deselect();
-        render();
-        showToast(`Loaded ${missions.length} mission(s) from robot`);
+        applyLoadedPayload(data, 'robot');
     }
     catch (err) {
         alert("Load failed:\n" + err.message);
     }
 });
+
+  els.btnExportJson.addEventListener('click', () => {
+    const json = JSON.stringify(buildMissionPayload(), null, 2);
+    triggerDownload(new Blob([json], {type:'application/json'}), 'missions.json');
+    showToast('JSON downloaded');
+  });
 
   els.fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -739,33 +807,7 @@ els.btnLoad.addEventListener("click", async () => {
     reader.onload = () => {
       try{
         const data = JSON.parse(reader.result);
-        const list = Array.isArray(data) ? data : data.missions;
-        if(!Array.isArray(list)) throw new Error('JSON must be an array of missions, or an object with a "missions" array');
-
-        missions = list.map((m, i) => {
-          if(!ENUMS.driveMode.includes(m.driveMode)) throw new Error(`mission ${i}: invalid driveMode "${m.driveMode}"`);
-          if(!ENUMS.lineMode.includes(m.lineMode)) throw new Error(`mission ${i}: invalid lineMode "${m.lineMode}"`);
-          if(!ENUMS.condition.includes(m.condition)) throw new Error(`mission ${i}: invalid condition "${m.condition}"`);
-          if(!ENUMS.maskMode.includes(m.maskMode)) throw new Error(`mission ${i}: invalid maskMode "${m.maskMode}"`);
-          if(!ENUMS.stopMode.includes(m.stopMode)) throw new Error(`mission ${i}: invalid stopMode "${m.stopMode}"`);
-          return {
-            id: uid(),
-            label: m.label || ('Mission ' + (i + 1)),
-            driveMode: m.driveMode,
-            lineMode: m.lineMode,
-            leftSpeed: clampInt(m.leftSpeed),
-            rightSpeed: clampInt(m.rightSpeed),
-            condition: m.condition,
-            condition_threshold: clampInt(m.condition_threshold),
-            sensorLeft: clampInt(m.sensorLeft) & 0xFF,
-            sensorRight: clampInt(m.sensorRight) & 0xFF,
-            maskMode: m.maskMode,
-            stopMode: m.stopMode,
-          };
-        });
-
-        deselect();
-        showToast(`Loaded ${missions.length} mission(s) from ${file.name}`);
+        applyLoadedPayload(data, file.name);
       }catch(err){
         alert('Load failed: ' + err.message);
       }finally{
@@ -777,7 +819,7 @@ els.btnLoad.addEventListener("click", async () => {
   });
 
 
-  els.btnExportCpp.addEventListener('click', () => {
+  els.btnExportCpp && els.btnExportCpp.addEventListener('click', () => {
     els.exportText.value = buildExport(els.exportFormat.value);
     els.exportDialog.showModal();
   });
@@ -801,7 +843,7 @@ els.btnLoad.addEventListener("click", async () => {
 
   function buildCppArray(){
     if(missions.length === 0) return '// No missions defined.\n';
-    const lines = ['#include "mission.h"', '', `MissionState missions[${missions.length}] = {`];
+    const lines = ['#include "mission.h"', '', `// start_from = ${clampInt(els.f_startFrom.value) || 1}`, `MissionState missions[${missions.length}] = {`];
     missions.forEach((m, i) => {
       lines.push(`    // [${i}] ${m.label}`);
       lines.push('    {');
@@ -813,7 +855,8 @@ els.btnLoad.addEventListener("click", async () => {
       lines.push(`        ${m.sensorRight}, // sensorRight = 0b${m.sensorRight.toString(2).padStart(8,'0')}`);
       lines.push(`        ${m.sensorLeft}, // sensorLeft  = 0b${m.sensorLeft.toString(2).padStart(8,'0')}`);
       lines.push(`        MaskMode::${m.maskMode},`);
-      lines.push(`        StopMode::${m.stopMode}`);
+      lines.push(`        StopMode::${m.stopMode},`);
+      lines.push(`        ${m.is_checkpoint ? 'true' : 'false'} // is_checkpoint`);
       lines.push(`    }${i < missions.length-1 ? ',' : ''}`);
     });
     lines.push('};', '');

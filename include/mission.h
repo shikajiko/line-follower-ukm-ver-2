@@ -29,12 +29,16 @@ struct MissionState {
     uint8_t sensorRight;
     MaskMode maskMode;
     StopMode stopMode;
+    bool is_checkpoint;
 };
 
 extern MissionState missionStates[MAX_MISSIONS];
 extern int NUM_STATES;
 
 void resetMissionState();
+void resetFromLastCheckpoint();
+void setCurrentMission(int n);
 void runMission();
+void updateStartIndex(int n);
 
 #endif

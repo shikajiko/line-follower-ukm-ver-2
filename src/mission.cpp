@@ -5,16 +5,38 @@
 
 static int dist_encoder = 0;
 static int last_mission = -1;
+static int start_index = 0;
 static uint32_t mission_timer = 0;
 static uint32_t current_mission = 0;
+static uint32_t last_checkpoint = 0;
+
 
 void resetMissionState() {
     last_mission = -1;
-    current_mission = 0;
+    current_mission = start_index;
     mission_timer = 0;
     dist_encoder = 0;
     resetEncoder(1);
     resetEncoder(2);
+}
+
+void resetFromLastCheckpoint() {
+    current_mission = last_checkpoint;
+    last_mission = last_checkpoint;
+    mission_timer = 0;
+    dist_encoder = 0;
+    resetEncoder(1);
+    resetEncoder(2);
+}
+
+void updateStartIndex(int n) {
+    start_index = n;
+}
+
+void setCurrentMission(int n) {
+    if (n < NUM_STATES) {
+        current_mission = n;
+    }
 }
 
 static void displayMissionInfo(uint32_t index, uint32_t encoder_left, uint32_t encoder_right, const MissionState &mission) {
@@ -67,6 +89,10 @@ uint8_t MaskSensor(uint8_t maskLeft, uint8_t maskRight, MaskMode mode) {
 }
 
 void runStateLogic(const MissionState &s, bool justEntered) {
+    if (s.is_checkpoint) {
+        last_checkpoint = current_mission;
+    }
+    
     if (justEntered) {
         mission_timer = millis();
     }
@@ -101,11 +127,11 @@ bool checkStateObjective(const MissionState &s) {
 }
 
 MissionState missionStates[MAX_MISSIONS] = {
-    {LINE_BLACK, PID_STRAIGHT, 135, 140, COND_DIST_GT, 450, 0b11111100, 0b00111111, MASK_OR, STOP},
-    {LINE_BLACK, DIRECT_MOVE, -140, 140, COND_DIST_GT, 80, 0b00000000, 0b00011111, MASK_OR, STOP},
-    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 150, 0b11111100, 0b00111111, MASK_OR, NONE},
-    {LINE_BLACK, PID_STRAIGHT, 100, 100, COND_SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE},
-    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 1000, 0b11111100, 0b00111111, MASK_OR, NONE},
+    {LINE_BLACK, PID_STRAIGHT, 135, 140, COND_DIST_GT, 450, 0b11111100, 0b00111111, MASK_OR, STOP, true},
+    {LINE_BLACK, DIRECT_MOVE, -140, 140, COND_DIST_GT, 80, 0b00000000, 0b00011111, MASK_OR, STOP, false},
+    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 150, 0b11111100, 0b00111111, MASK_OR, NONE, false},
+    {LINE_BLACK, PID_STRAIGHT, 100, 100, COND_SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE, false},
+    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 1000, 0b11111100, 0b00111111, MASK_OR, NONE, false},
 };
 
 int NUM_STATES = 5;
