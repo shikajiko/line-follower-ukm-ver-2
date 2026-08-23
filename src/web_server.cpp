@@ -1,9 +1,11 @@
 #include "web_server.h"
+#include "wifi_config.h"
 #include "mission.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <LittleFS.h>
 #include <string.h>
@@ -14,6 +16,7 @@ static WebServer webServer(80);
 static bool web_server_started = false;
 static bool is_mission_loaded = false;
 static bool fs_mounted = false;
+static bool sta_connected = false;
 
 #define MISSION_PREF_NAMESPACE "missions"
 #define MISSION_PREF_KEY "data"
@@ -277,6 +280,102 @@ void handleUpdateMission()
     webServer.send(200, "text/plain", "Mission saved");
 }
 
+// ---------------------------------------------------------------------
+// WiFi configuration endpoints
+//
+// GET  /wifi  -> current status/settings (never returns saved passwords)
+// POST /wifi  -> update sta_ssid/sta_password and/or ap_ssid_prefix/
+//                ap_password. Any field left out of the JSON body is left
+//                unchanged. On success the device reboots to apply the
+//                new settings.
+// ---------------------------------------------------------------------
+
+void handleGetWifiConfig()
+{
+    JsonDocument doc;
+
+    String staSsid = wifiGetStaSsid();
+    doc["sta_ssid"] = staSsid;
+    doc["sta_connected"] = sta_connected;
+    doc["sta_ip"] = sta_connected ? WiFi.localIP().toString() : "";
+
+    doc["ap_ssid"] = wifiGetApSsid();
+    doc["ap_ssid_prefix"] = wifiGetApSsidPrefix();
+    doc["ap_ip"] = WiFi.softAPIP().toString();
+
+    doc["hostname"] = wifiGetHostname();
+    doc["mac_suffix"] = wifiGetMacSuffix();
+
+    String out;
+    serializeJson(doc, out);
+    webServer.send(200, "application/json", out);
+}
+
+void handleSetWifiConfig()
+{
+    if (!webServer.hasArg("plain"))
+    {
+        webServer.send(400, "text/plain", "Missing request body");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, webServer.arg("plain"));
+    if (err)
+    {
+        webServer.send(400, "text/plain", "Invalid JSON");
+        return;
+    }
+
+    bool changed = false;
+
+    // Station (home/phone WiFi) credentials.
+    if (!doc["sta_ssid"].isNull())
+    {
+        String ssid = doc["sta_ssid"] | "";
+        String pass = doc["sta_password"] | "";
+
+        if (ssid.length() == 0)
+        {
+            wifiClearStaCredentials();
+        }
+        else if (!wifiSaveStaCredentials(ssid, pass))
+        {
+            webServer.send(400, "text/plain",
+                "Invalid WiFi name/password (password must be empty or at least 8 characters)");
+            return;
+        }
+        changed = true;
+    }
+
+    // Robot's own hotspot settings.
+    if (!doc["ap_ssid_prefix"].isNull())
+    {
+        String prefix = doc["ap_ssid_prefix"] | "";
+        String pass = doc["ap_password"] | "";
+
+        if (!wifiSaveApSettings(prefix, pass))
+        {
+            webServer.send(400, "text/plain",
+                "Invalid hotspot name/password (name required, password must be empty or at least 8 characters)");
+            return;
+        }
+        changed = true;
+    }
+
+    if (!changed)
+    {
+        webServer.send(400, "text/plain", "Nothing to update");
+        return;
+    }
+
+    webServer.send(200, "text/plain", "Saved. Rebooting to apply new WiFi settings.");
+    displayOLED("WIFI CONFIG", "SAVED", "REBOOTING...", "");
+
+    delay(300); // let the response flush before we drop the connection
+    ESP.restart();
+}
+
 void handleNotFound() {
     webServer.send(404, "text/plain", "Not found");
 }
@@ -292,6 +391,8 @@ void startMissionWebServer() {
     webServer.on("/", HTTP_GET, handleIndex);
     webServer.on("/load", HTTP_GET, handleLoadMission);
     webServer.on("/save", HTTP_POST, handleUpdateMission);
+    webServer.on("/wifi", HTTP_GET, handleGetWifiConfig);
+    webServer.on("/wifi", HTTP_POST, handleSetWifiConfig);
     webServer.onNotFound(handleNotFound);
 
     webServer.begin();
@@ -305,28 +406,107 @@ void handleMissionWebServer() {
     }
 }
 
-static IPAddress ip;
+// Attempts to join the saved home/phone WiFi as a station. Returns true on
+// success. Blocks for up to WIFI_STA_CONNECT_TIMEOUT_MS.
+static bool connectStationMode()
+{
+    String ssid = wifiGetStaSsid();
+    String pass = wifiGetStaPassword();
+
+    if (ssid.length() == 0)
+        return false;
+
+    Serial.printf("[WEB] Attempting to join \"%s\" as station...\n", ssid.c_str());
+
+    if (pass.length() == 0)
+        WiFi.begin(ssid.c_str());
+    else
+        WiFi.begin(ssid.c_str(), pass.c_str());
+
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_STA_CONNECT_TIMEOUT_MS)
+    {
+        delay(250);
+    }
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        Serial.print("[WEB] Station connected, IP = ");
+        Serial.println(WiFi.localIP());
+        return true;
+    }
+
+    Serial.println("[WEB] Station connect timed out, staying on hotspot only");
+    return false;
+}
 
 void enableHotspot() {
-    if (!web_server_started) {
-        WiFi.mode(WIFI_AP);
-        WiFi.softAP(AP_SSID, AP_PASSWORD);
+    if (web_server_started) {
+        // Already running; nothing to do.
+        return;
+    }
 
-        ip = WiFi.softAPIP();
+    wifiConfigInit();
+
+    // AP + STA simultaneously: the hotspot is always available as a
+    // fallback, and we additionally try to join a saved home/phone network
+    // so the user doesn't have to switch off their own WiFi.
+    WiFi.mode(WIFI_AP_STA);
+
+    String apSsid = wifiGetApSsid();
+    String apPassword = wifiGetApPassword();
+
+    if (apPassword.length() == 0)
+        WiFi.softAP(apSsid.c_str());
+    else
+        WiFi.softAP(apSsid.c_str(), apPassword.c_str());
+
+    IPAddress apIp = WiFi.softAPIP();
+
+    sta_connected = connectStationMode();
+
+    String hostname = wifiGetHostname();
+    if (sta_connected)
+    {
+        if (MDNS.begin(hostname.c_str()))
+        {
+            MDNS.addService("http", "tcp", 80);
+            Serial.printf("[WEB] mDNS started: http://%s.local/\n", hostname.c_str());
+        }
+        else
+        {
+            Serial.println("[WEB] mDNS failed to start");
+        }
     }
 
     char line1buf[24];
     char line2buf[24];
     char line3buf[24];
+    char line4buf[24];
 
-    snprintf(line1buf, sizeof(line1buf), "Hotspot \"%s\"", AP_SSID);
-    snprintf(line2buf, sizeof(line2buf), "\"%s\"", AP_PASSWORD);
-    snprintf(line3buf, sizeof(line3buf), "http://%u.%u.%u.%u/\n", ip[0], ip[1], ip[2], ip[3]);
+    if (sta_connected)
+    {
+        IPAddress staIp = WiFi.localIP();
+        snprintf(line1buf, sizeof(line1buf), "WiFi \"%s\"", wifiGetStaSsid().c_str());
+        snprintf(line2buf, sizeof(line2buf), "http://%u.%u.%u.%u/", staIp[0], staIp[1], staIp[2], staIp[3]);
+        snprintf(line3buf, sizeof(line3buf), "or http://%s.local/", hostname.c_str());
+        snprintf(line4buf, sizeof(line4buf), "AP \"%s\"", apSsid.c_str());
 
-    displayOLED(line1buf, line2buf, line3buf, "");
+        Serial.printf("[WEB] Also reachable via hotspot \"%s\" at http://%u.%u.%u.%u/\n",
+                      apSsid.c_str(), apIp[0], apIp[1], apIp[2], apIp[3]);
+    }
+    else
+    {
+        snprintf(line1buf, sizeof(line1buf), "Hotspot \"%s\"", apSsid.c_str());
+        snprintf(line2buf, sizeof(line2buf), "%s", apPassword.length() ? apPassword.c_str() : "(open network)");
+        snprintf(line3buf, sizeof(line3buf), "http://%u.%u.%u.%u/", apIp[0], apIp[1], apIp[2], apIp[3]);
+        line4buf[0] = '\0';
+    }
 
-    Serial.printf("[WEB] Hotspot \"%s\" up connect and browse to http://%u.%u.%u.%u/\n",
-                  AP_SSID, ip[0], ip[1], ip[2], ip[3]);
+    displayOLED(line1buf, line2buf, line3buf, line4buf);
+
+    Serial.printf("[WEB] Hotspot \"%s\" up, connect and browse to http://%u.%u.%u.%u/\n",
+                  apSsid.c_str(), apIp[0], apIp[1], apIp[2], apIp[3]);
 
     startMissionWebServer();
 }

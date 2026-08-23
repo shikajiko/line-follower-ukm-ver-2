@@ -1,31 +1,35 @@
-#ifndef WEB_SERVER_H
-#define WEB_SERVER_H
+#pragma once
 
-#include <stdint.h>
-#include <stddef.h>
-#include "mission.h"
+#include <Arduino.h>
 #include <ArduinoJson.h>
 
-#define AP_SSID "LF_1"
-#define AP_PASSWORD "icH12o2026"
+// NOTE: AP_SSID / AP_PASSWORD are no longer used directly for the actual
+// hotspot (that now comes from wifi_config.h, is user-editable, and gets a
+// unique per-device suffix). They're kept here only as compile-time
+// fallbacks in case other code in the project still references them.
+#ifndef AP_SSID
+#define AP_SSID "LineBot-Setup"
+#endif
+#ifndef AP_PASSWORD
+#define AP_PASSWORD "line12345678"
+#endif
 
-#define MISSION_RECORD_SIZE 15
+// ---- Filesystem / mission persistence ----
+bool mountFilesystem();
+bool loadMissionFile();
+bool parseMissionJSON(const JsonDocument &doc);
 
-// HTTP route handlers
-void handleIndex();
-void handleUpdateMission();
-void handleLoadMission();
-void handleNotFound();
-
-// Lifecycle
-void enableHotspot();
+// ---- HTTP server lifecycle ----
 void startMissionWebServer();
 void handleMissionWebServer();
 
-bool loadMissionFile();
-bool isWebServerStarted();
-bool isMissionLoaded();
-bool parseMissionJSON(const JsonDocument &doc);
-bool mountFilesystem();
+// ---- WiFi lifecycle ----
+// Call this once from setup() instead of the old enableHotspot(). It brings
+// up the robot's own hotspot, attempts to join a saved home/phone network
+// as a station (if one is configured), starts mDNS when that succeeds, and
+// finally starts the mission web server. Safe to call more than once.
+void enableHotspot();
 
-#endif
+// ---- Status ----
+bool isMissionLoaded();
+bool isWebServerStarted();

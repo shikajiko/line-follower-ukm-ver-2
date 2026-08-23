@@ -192,6 +192,23 @@
   #guideDialog p{margin:0 0 4px; color:var(--muted); line-height:1.7; font-size:12.5px;}
   #guideDialog code{color:var(--teal); background:#0f1216; padding:1px 5px; border-radius:2px; font-size:11.5px;}
 
+  #wifiDialog .dialog-body{padding:6px 20px 20px; max-height:75vh; overflow:auto;}
+  .wifi-section{border:1px solid var(--border); border-radius:5px; padding:14px 16px 16px; margin:16px 0 0;}
+  .wifi-section:first-child{margin-top:14px;}
+  .wifi-section h3{font-size:10.5px; text-transform:uppercase; letter-spacing:.1em; color:var(--amber); margin:0 0 12px;}
+  .wifi-status{
+    display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--muted);
+    background:#0f1216; border:1px solid var(--border); border-radius:4px; padding:8px 10px; margin-bottom:12px;
+  }
+  .wifi-status .pip{width:8px; height:8px; border-radius:50%; background:var(--dim); flex:none;}
+  .wifi-status.ok .pip{background:var(--teal); box-shadow:0 0 6px var(--teal);}
+  .wifi-status.off .pip{background:var(--red);}
+  .wifi-form-row{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;}
+  .wifi-form-row .field{display:flex; flex-direction:column; gap:6px;}
+  .wifi-form-row .field label{font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);}
+  .wifi-hint{font-size:10.5px; color:var(--dim); margin:0 0 12px; line-height:1.6;}
+  .wifi-actions{display:flex; gap:8px; flex-wrap:wrap;}
+
   #fileInput{display:none;}
   #toast{
     position:fixed; bottom:20px; right:20px; background:var(--panel-2); border:1px solid var(--amber);
@@ -211,9 +228,11 @@
   </div>
   <div class="toolbar">
     <button class="ghost" id="btnGuide">Petunjuk</button>
+    <button class="ghost" id="btnWifiSetup">WiFi Setup</button>
     <button class="ghost" id="btnNew">+ Misi Baru</button>
     <button id="btnLoad">Load mission</button>
     <button id="btnSave">Save mission</button>
+    <button id="btnImportJson">Import JSON</button>
     <button id="btnExportJson">Download JSON</button>
   </div>
 </header>
@@ -392,6 +411,78 @@
   </div>
 </dialog>
 
+<dialog id="wifiDialog">
+  <div class="dialog-head">
+    <h2>WiFi Setup</h2>
+    <button class="ghost" id="btnCloseWifi">Close</button>
+  </div>
+  <div class="dialog-body">
+
+    <div class="wifi-status" id="wifiStatus">
+      <span class="pip"></span>
+      <span id="wifiStatusText">Checking status...</span>
+    </div>
+
+    <div class="wifi-section">
+      <h3>Join your WiFi (station mode)</h3>
+      <p class="wifi-hint">
+        Let the robot join your home/phone WiFi so you don't have to disconnect from it
+        and connect to the robot's hotspot instead. Once connected you can reach the robot
+        at <code style="color:var(--teal); background:#0f1216; padding:1px 5px; border-radius:2px;" id="wifiHostnamePreview">robot.local</code>
+        or the IP shown above, while staying on your normal network. The robot's own hotspot
+        stays available as a fallback.
+      </p>
+      <form id="staForm">
+        <div class="wifi-form-row">
+          <div class="field">
+            <label for="w_staSsid">WiFi name (SSID)</label>
+            <input type="text" id="w_staSsid" placeholder="e.g. Home-5G" maxlength="32">
+          </div>
+          <div class="field">
+            <label for="w_staPass">Password</label>
+            <input type="text" id="w_staPass" placeholder="leave blank for open network" maxlength="64">
+          </div>
+        </div>
+        <div class="wifi-actions">
+          <button type="submit" class="primary">Save &amp; connect</button>
+          <button type="button" class="danger" id="btnForgetWifi">Forget saved WiFi</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="wifi-section">
+      <h3>Robot's own hotspot</h3>
+      <p class="wifi-hint">
+        Customize the robot's hotspot name and password. A short code derived from the
+        robot's hardware address is always appended automatically, so multiple robots
+        never end up with the exact same network name — current name:
+        <code style="color:var(--teal); background:#0f1216; padding:1px 5px; border-radius:2px;" id="wifiApPreview">-</code>
+      </p>
+      <form id="apForm">
+        <div class="wifi-form-row">
+          <div class="field">
+            <label for="w_apPrefix">Hotspot name</label>
+            <input type="text" id="w_apPrefix" placeholder="e.g. RedRobot" maxlength="20">
+          </div>
+          <div class="field">
+            <label for="w_apPass">Hotspot password</label>
+            <input type="text" id="w_apPass" placeholder="min 8 characters, or blank for open" maxlength="64">
+          </div>
+        </div>
+        <div class="wifi-actions">
+          <button type="submit" class="primary">Save hotspot settings</button>
+        </div>
+      </form>
+    </div>
+
+    <p class="wifi-hint" style="margin-top:16px;">
+      Saving either section reboots the robot to apply the new settings. If you're currently
+      connected through the hotspot you're changing, you'll need to reconnect afterward.
+    </p>
+
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
@@ -415,10 +506,15 @@
     formTitle: $('formTitle'), form: $('missionForm'),
     btnSaveMission: $('btnSaveMission'), btnDuplicate: $('btnDuplicate'), btnDelete: $('btnDelete'),
     btnClear: $('btnClear'), btnNew: $('btnNew'), btnLoad: $('btnLoad'), btnSave: $('btnSave'),
+    btnImportJson: $('btnImportJson'),
     btnExportCpp: $('btnExportCpp'), btnExportJson: $('btnExportJson'), fileInput: $('fileInput'),
     exportDialog: $('exportDialog'), exportText: $('exportText'), exportFormat: $('exportFormat'),
     btnCloseDialog: $('btnCloseDialog'), btnCopyExport: $('btnCopyExport'), btnDownloadExport: $('btnDownloadExport'),
     guideDialog: $('guideDialog'), btnGuide: $('btnGuide'), btnCloseGuide: $('btnCloseGuide'),
+    wifiDialog: $('wifiDialog'), btnWifiSetup: $('btnWifiSetup'), btnCloseWifi: $('btnCloseWifi'),
+    wifiStatus: $('wifiStatus'), wifiStatusText: $('wifiStatusText'),
+    wifiHostnamePreview: $('wifiHostnamePreview'), wifiApPreview: $('wifiApPreview'),
+    staForm: $('staForm'), apForm: $('apForm'), btnForgetWifi: $('btnForgetWifi'),
     toast: $('toast'),
     bitsLeft: $('bitsLeft'), bitsRight: $('bitsRight'),
     f_startFrom: $('f_startFrom'),
@@ -584,6 +680,87 @@ function buildBitfield(container, bitsArr, onChange){
   });
   els.btnGuide.addEventListener('click', () => els.guideDialog.showModal());
   els.btnCloseGuide.addEventListener('click', () => els.guideDialog.close());
+
+  // ---- WiFi setup dialog ----
+  async function refreshWifiStatus(){
+    els.wifiStatus.className = 'wifi-status';
+    els.wifiStatusText.textContent = 'Checking status...';
+    try{
+      const res = await fetch('/wifi');
+      if(!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+
+      els.wifiApPreview.textContent = data.ap_ssid || '-';
+      els.wifiHostnamePreview.textContent = (data.hostname || 'robot') + '.local';
+      $('w_apPrefix').value = data.ap_ssid_prefix || '';
+      $('w_staSsid').value = data.sta_ssid || '';
+
+      if(data.sta_connected){
+        els.wifiStatus.classList.add('ok');
+        els.wifiStatusText.textContent = `Connected to "${data.sta_ssid}" · ${data.sta_ip} · also reachable at ${data.hostname}.local`;
+      } else if(data.sta_ssid){
+        els.wifiStatus.classList.add('off');
+        els.wifiStatusText.textContent = `Saved network "${data.sta_ssid}" is not currently connected. Hotspot "${data.ap_ssid}" is active.`;
+      } else {
+        els.wifiStatusText.textContent = `No home WiFi saved yet. Hotspot "${data.ap_ssid}" is active.`;
+      }
+    }catch(err){
+      els.wifiStatus.classList.add('off');
+      els.wifiStatusText.textContent = 'Could not load WiFi status: ' + err.message;
+    }
+  }
+
+  els.btnWifiSetup.addEventListener('click', () => {
+    els.wifiDialog.showModal();
+    refreshWifiStatus();
+  });
+  els.btnCloseWifi.addEventListener('click', () => els.wifiDialog.close());
+
+  async function postWifiConfig(body, successMsg){
+    const res = await fetch('/wifi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if(!res.ok) throw new Error(await res.text());
+    showToast(successMsg);
+    els.wifiDialog.close();
+  }
+
+  els.staForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const ssid = $('w_staSsid').value.trim();
+    const pass = $('w_staPass').value;
+    if(!ssid){ alert('Enter a WiFi name first, or use "Forget saved WiFi" to clear it.'); return; }
+    if(pass && pass.length < 8){ alert('Password must be at least 8 characters, or leave blank for an open network.'); return; }
+    try{
+      await postWifiConfig({ sta_ssid: ssid, sta_password: pass }, 'Saved. Robot is rebooting and will try to connect...');
+    }catch(err){
+      alert('Failed to save WiFi settings:\n' + err.message);
+    }
+  });
+
+  els.btnForgetWifi.addEventListener('click', async () => {
+    if(!confirm('Forget the saved WiFi network? The robot will only use its own hotspot until you set a new one.')) return;
+    try{
+      await postWifiConfig({ sta_ssid: '' }, 'Saved WiFi forgotten. Robot is rebooting...');
+    }catch(err){
+      alert('Failed to forget WiFi:\n' + err.message);
+    }
+  });
+
+  els.apForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const prefix = $('w_apPrefix').value.trim();
+    const pass = $('w_apPass').value;
+    if(!prefix){ alert('Enter a hotspot name first.'); return; }
+    if(pass && pass.length < 8){ alert('Password must be at least 8 characters, or leave blank for an open network.'); return; }
+    try{
+      await postWifiConfig({ ap_ssid_prefix: prefix, ap_password: pass }, 'Saved. Robot is rebooting to apply the new hotspot settings...');
+    }catch(err){
+      alert('Failed to save hotspot settings:\n' + err.message);
+    }
+  });
 
   function selectMission(id){
     selectedId = id;
@@ -754,24 +931,24 @@ function buildBitfield(container, bitsArr, onChange){
     showToast(`Loaded ${missions.length} mission(s)${sourceLabel ? ' from ' + sourceLabel : ''}`);
   }
 
+  // Push the given payload to the robot via /save (used by Save mission
+  // and by Import JSON, which syncs the robot to match the imported file).
+  async function pushToRobot(payload){
+    const response = await fetch("/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if(!response.ok) throw new Error(await response.text());
+  }
+
   // ---- Load/save use JSON files on disk (no robot connection needed) ----
 // ---- Upload missions directly to the robot ----
 els.btnSave.addEventListener('click', async () => {
     const payload = buildMissionPayload();
 
     try {
-        const response = await fetch("/save", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            throw new Error(await response.text());
-        }
-
+        await pushToRobot(payload);
         showToast(`Uploaded ${missions.length} mission(s) to robot`);
     }
     catch (err) {
@@ -800,21 +977,36 @@ els.btnLoad.addEventListener("click", async () => {
     showToast('JSON downloaded');
   });
 
+  // ---- Import JSON: load a local file into the editor, then push it to
+  // the robot so the robot's current missions match the imported file. ----
+  els.btnImportJson.addEventListener('click', () => {
+    els.fileInput.click();
+  });
+
   els.fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if(!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try{
         const data = JSON.parse(reader.result);
         applyLoadedPayload(data, file.name);
+
+        // Sync robot to the imported file.
+        try{
+          await pushToRobot(buildMissionPayload());
+          showToast(`Imported ${missions.length} mission(s) and synced to robot`);
+        }catch(uploadErr){
+          console.error(uploadErr);
+          alert(`Imported ${missions.length} mission(s) into the editor, but syncing to the robot failed:\n${uploadErr.message}\n\nUse "Save mission" to retry the upload.`);
+        }
       }catch(err){
-        alert('Load failed: ' + err.message);
+        alert('Import failed: ' + err.message);
       }finally{
         els.fileInput.value = '';
       }
     };
-    reader.onerror = () => alert('Load failed: could not read file');
+    reader.onerror = () => alert('Import failed: could not read file');
     reader.readAsText(file);
   });
 
