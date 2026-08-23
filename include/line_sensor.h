@@ -11,6 +11,11 @@ uint16_t readLineSensorChannel(uint8_t channel);
 uint16_t getLineSensorRaw(uint8_t id);
 uint8_t getLineSensorDigital(uint8_t id);
 uint16_t getLineSensorThreshold(uint8_t id);
+uint16_t getLineSensorMax(uint8_t id);
+uint16_t getLineSensorMin(uint8_t id);
+void startLineSensorTask();
+void getLineSensorSnapshot(uint16_t rawOut[16], uint8_t digitalOut[16]);
+void printLineSensorCalibration();
 
 bool isLineDetected();
 

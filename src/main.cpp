@@ -38,6 +38,7 @@ void setup() {
   initMotor();
   initADC();
   initMUX();
+  startLineSensorTask();
   initGY25();
   initServo();
 
@@ -56,7 +57,7 @@ void setup() {
 void loop() {
   // Poll button inputs
   pollButtons();
-  readLineSensors();
+  // readLineSensors();
   // Run test sequence state machine
   // runTestSequence();
   runStateMachine();

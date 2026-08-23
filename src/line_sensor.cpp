@@ -3,6 +3,10 @@
 #include "Arduino.h"
 #include <Preferences.h>
 #include <strings.h>
+#include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 
 static uint16_t line_sensor_raw[16] = {0};
 static uint8_t line_sensor_digital[16] = {0};
@@ -15,47 +19,60 @@ static uint8_t line_sensor_debounce_count[16] = {0};
 static Preferences saved_calibration;
 static bool is_calibration_loaded = false;
 
+// --- Multicore additions -------------------------------------------------
+// All of the arrays above are written by lineSensorTask() on Core 0 and
+// read/occasionally written by application code running on Core 1
+// (state machine, mission, locomotion). This mutex serializes access.
+static SemaphoreHandle_t line_sensor_mutex = nullptr;
+static TaskHandle_t line_sensor_task_handle = nullptr;
+
+// Set true/false only by lineSensorCalibrationBegin()/End(), read only by
+// the Core-0 task. Both sides always touch this under line_sensor_mutex,
+// so no separate atomic type is needed.
+static volatile bool line_sensor_calibration_active = false;
+
+// Before startLineSensorTask() has been called, line_sensor_mutex is null
+// and nothing is running on Core 0 yet, so it's safe to just proceed
+// unlocked (e.g. code that runs during setup(), before the task exists).
+static inline bool lockLineSensors() {
+  if (line_sensor_mutex == nullptr) {
+    return true;
+  }
+  return xSemaphoreTake(line_sensor_mutex, portMAX_DELAY) == pdTRUE;
+}
+static inline void unlockLineSensors() {
+  if (line_sensor_mutex != nullptr) {
+    xSemaphoreGive(line_sensor_mutex);
+  }
+}
+// ---------------------------------------------------------------------
+
+// Rolling-average smoothing buffer used only during calibration, to stop
+// a single noisy ADC sample (MUX crosstalk, electrical glitch) from
+// permanently setting a channel's max/min to an outlier. Without this,
+// one bad tick sets threshold_high near a value that channel can
+// basically never reach again in normal use -> looks like "sensor stuck
+// at 0 except at one specific spot" (wherever the glitch happens to
+// reproduce by chance).
+#define LINE_SENSOR_CAL_SAMPLE_WINDOW 3
+static uint16_t line_sensor_cal_history[16][LINE_SENSOR_CAL_SAMPLE_WINDOW] = {{0}};
+static uint8_t line_sensor_cal_hist_idx[16] = {0};
+static uint8_t line_sensor_cal_hist_count[16] = {0};
+
 // Tunables -------------------------------------------------------------
-// Fraction of (max-min) calibration range used as the +/- margin around
-// the midpoint. Widened from 0.03 to 0.08: the old value was tuned right
-// at the edge of noise tolerance, which meant normal sensor jitter could
-// sit close enough to the midpoint to cause missed / delayed detections.
-// A wider band swallows more jitter at a small cost in sensitivity.
-//   - If you start seeing real line hits fail to register, raise this
-//     further. If you see false triggers on a clean surface, lower it.
 #define LINE_SENSOR_HYSTERESIS_PCT 0.08f
-
-// Hard cap on the margin in raw ADC counts, regardless of range. Raised
-// from 60 to 100 so the larger percentage above can actually take effect
-// on sensors with a wide calibrated range, instead of being clipped back
-// down to the old ceiling.
 #define LINE_SENSOR_HYSTERESIS_MAX_COUNTS 100
-
-// Hard floor on the margin in raw ADC counts, used only for sensors with
-// no calibrated range to compare against (defaults / never-calibrated).
 #define LINE_SENSOR_HYSTERESIS_MIN_COUNTS 20
-
-// Cap on the margin as a fraction of a sensor's OWN calibrated range
-// (max-min). This matters for lower-contrast sensors (e.g. a center
-// sensor with less black/white separation than the outer ones): if the
-// margin is allowed to eat too much of a small range, the "high" trip
-// point ends up right next to the one-time calibration-run max, which
-// real-world readings then rarely reach again -> the sensor gets stuck
-// reporting 0 forever. Capping relative to each sensor's own range keeps
-// real headroom below max regardless of how narrow that sensor's range is.
 #define LINE_SENSOR_HYSTERESIS_RANGE_FRACTION 0.30f
-
-// Number of consecutive same-direction reads required before the digital
-// state actually flips. 1 = hysteresis only, no added delay. This is
-// already the fastest possible setting — the state flips the instant the
-// threshold is crossed. Do NOT raise this to try to go faster; raising it
-// only adds latency. Only raise it (2-3) if flicker persists after
-// widening the hysteresis margin above, and you can tolerate the delay.
 #define LINE_SENSOR_DEBOUNCE_N 1
+
+// How often the Core-0 task scans all 16 channels. Matches the old
+// effective rate (readLineSensors() once per ~1ms main-loop iteration),
+// but is now decoupled from Serial/display work on Core 1, so it should
+// actually be steadier than before.
+#define LINE_SENSOR_SCAN_PERIOD_MS 1
 // ------------------------------------------------------------------------
 
-// Used when there's no measured range to compare against (defaults /
-// never-calibrated channels). Flat floor/ceiling only.
 static uint16_t clampMargin(uint16_t margin) {
   if (margin > LINE_SENSOR_HYSTERESIS_MAX_COUNTS) {
     return LINE_SENSOR_HYSTERESIS_MAX_COUNTS;
@@ -66,12 +83,6 @@ static uint16_t clampMargin(uint16_t margin) {
   return margin;
 }
 
-// Used when a real per-sensor calibrated range is available. Applies the
-// normal floor/ceiling, then caps to a fraction of THIS sensor's own
-// range so the trip point never crowds out that sensor's actual max/min.
-// Deliberately does NOT enforce the flat floor if the range is too small
-// to support it — a smaller-than-usual margin that still works beats a
-// "safe" one that never trips.
 static uint16_t clampMarginToRange(uint16_t margin, uint16_t range) {
   if (margin > LINE_SENSOR_HYSTERESIS_MAX_COUNTS) {
     margin = LINE_SENSOR_HYSTERESIS_MAX_COUNTS;
@@ -89,109 +100,75 @@ static void selectMUXChannel(uint8_t channel) {
 
   switch (channel) {
   case 0:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 1:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 2:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 3:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 4:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 5:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 6:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 7:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, LOW);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, LOW);
     break;
   case 8:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   case 9:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   case 10:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   case 11:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, LOW);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, LOW); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   case 12:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   case 13:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, LOW);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, LOW);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   case 14:
-    digitalWrite(MUX_S0_PIN, LOW);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, LOW); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   case 15:
-    digitalWrite(MUX_S0_PIN, HIGH);
-    digitalWrite(MUX_S1_PIN, HIGH);
-    digitalWrite(MUX_S2_PIN, HIGH);
-    digitalWrite(MUX_S3_PIN, HIGH);
+    digitalWrite(MUX_S0_PIN, HIGH); digitalWrite(MUX_S1_PIN, HIGH);
+    digitalWrite(MUX_S2_PIN, HIGH); digitalWrite(MUX_S3_PIN, HIGH);
     break;
   }
 
-  // Trimmed from 5us to 3us: shaves per-channel latency across all 16
-  // channels every scan cycle. Still comfortably above typical analog
-  // MUX settle times. If you see noisy/erratic readings after this
-  // change, that's the first thing to revert.
   delayMicroseconds(3);
 }
+
+// --- Unlocked internals: only ever called while line_sensor_mutex is held ---
 
 static uint16_t readLineSensor(uint8_t channel) {
   selectMUXChannel(channel);
@@ -200,8 +177,6 @@ static uint16_t readLineSensor(uint8_t channel) {
   return raw;
 }
 
-// Applies hysteresis (dual threshold) + debounce to avoid 0/1 jitter
-// when the raw reading sits close to the calibrated midpoint.
 static uint8_t readLineSensorDigital(uint8_t channel) {
   uint16_t raw = line_sensor_raw[channel];
   uint8_t prev = line_sensor_digital[channel];
@@ -220,17 +195,100 @@ static uint8_t readLineSensorDigital(uint8_t channel) {
       line_sensor_debounce_count[channel] = 0;
     }
   } else {
-    // Reading agrees with current state again; reset the debounce counter.
     line_sensor_debounce_count[channel] = 0;
   }
 
   return line_sensor_digital[channel];
 }
 
-void readLineSensors() {
+static void applyHysteresisFromMidpoint(uint8_t i, uint16_t margin) {
+  line_sensor_threshold_high[i] = line_sensor_threshold[i] + margin;
+  line_sensor_threshold_low[i] =
+      (line_sensor_threshold[i] > margin) ? (line_sensor_threshold[i] - margin) : 0;
+}
+
+// Calibration accumulation. Only called from scanAllChannelsLocked() while
+// line_sensor_calibration_active is true, and always under the mutex.
+void lineSensorCalibrationUpdate() {
+  for (int i = 0; i < 16; i++) {
+    uint8_t idx = line_sensor_cal_hist_idx[i];
+    line_sensor_cal_history[i][idx] = line_sensor_raw[i];
+    line_sensor_cal_hist_idx[i] = (idx + 1) % LINE_SENSOR_CAL_SAMPLE_WINDOW;
+    if (line_sensor_cal_hist_count[i] < LINE_SENSOR_CAL_SAMPLE_WINDOW) {
+      line_sensor_cal_hist_count[i]++;
+    }
+
+    uint32_t sum = 0;
+    for (uint8_t k = 0; k < line_sensor_cal_hist_count[i]; k++) {
+      sum += line_sensor_cal_history[i][k];
+    }
+    uint16_t smoothed =
+        static_cast<uint16_t>(sum / line_sensor_cal_hist_count[i]);
+
+    if (smoothed > line_sensor_max[i]) {
+      line_sensor_max[i] = smoothed;
+    }
+    if (smoothed < line_sensor_min[i]) {
+      line_sensor_min[i] = smoothed;
+    }
+  }
+}
+
+// One full 16-channel scan + threshold update + (optional) calibration
+// accumulation. Caller MUST hold line_sensor_mutex.
+static void scanAllChannelsLocked() {
   for (int i = 0; i < 16; i++) {
     readLineSensor(i);
     readLineSensorDigital(i);
+  }
+  if (line_sensor_calibration_active) {
+    lineSensorCalibrationUpdate();
+  }
+}
+
+// --- Core 0 task -----------------------------------------------------------
+
+static void lineSensorTask(void *pvParameters) {
+  const TickType_t period = pdMS_TO_TICKS(LINE_SENSOR_SCAN_PERIOD_MS);
+  TickType_t lastWake = xTaskGetTickCount();
+
+  for (;;) {
+    if (xSemaphoreTake(line_sensor_mutex, portMAX_DELAY) == pdTRUE) {
+      scanAllChannelsLocked();
+      xSemaphoreGive(line_sensor_mutex);
+    }
+    vTaskDelayUntil(&lastWake, period);
+  }
+}
+
+// Call once from setup(), AFTER initMUX()/initADC() have configured the
+// relevant pins. Safe to call more than once (no-ops after the first).
+void startLineSensorTask() {
+  if (line_sensor_mutex == nullptr) {
+    line_sensor_mutex = xSemaphoreCreateMutex();
+  }
+  if (line_sensor_task_handle == nullptr) {
+    xTaskCreatePinnedToCore(
+        lineSensorTask,
+        "LineSensorTask",
+        4096,
+        nullptr,
+        2,      // priority: above default loopTask, below anything hard-real-time
+        &line_sensor_task_handle,
+        0       // Core 0
+    );
+  }
+}
+
+// --- Public API (all now thread-safe) --------------------------------------
+
+// Manual/blocking full scan. No longer needed in normal operation — the
+// Core-0 task does this continuously — but kept for one-off/manual use
+// (e.g. before startLineSensorTask() is called, or in test code).
+void readLineSensors() {
+  if (lockLineSensors()) {
+    scanAllChannelsLocked();
+    unlockLineSensors();
   }
 }
 
@@ -238,65 +296,137 @@ uint16_t readLineSensorChannel(uint8_t channel) {
   if (channel >= 16) {
     return 0;
   }
-  return readLineSensor(channel);
+  uint16_t val = 0;
+  if (lockLineSensors()) {
+    val = readLineSensor(channel);
+    unlockLineSensors();
+  }
+  return val;
 }
 
 uint16_t getLineSensorRaw(uint8_t id) {
-  if (id >= 16) {
-    return 0;
+  if (id >= 16) return 0;
+  uint16_t val = 0;
+  if (lockLineSensors()) {
+    val = line_sensor_raw[id];
+    unlockLineSensors();
   }
-  return line_sensor_raw[id];
+  return val;
 }
 
 uint8_t getLineSensorDigital(uint8_t id) {
-  if (id >= 16) {
-    return 0;
+  if (id >= 16) return 0;
+  uint8_t val = 0;
+  if (lockLineSensors()) {
+    val = line_sensor_digital[id];
+    unlockLineSensors();
   }
-  return line_sensor_digital[id];
+  return val;
 }
 
 uint16_t getLineSensorThreshold(uint8_t id) {
-  if (id >= 16) {
-    return 0;
+  if (id >= 16) return 0;
+  uint16_t val = 0;
+  if (lockLineSensors()) {
+    val = line_sensor_threshold[id];
+    unlockLineSensors();
   }
-  return line_sensor_threshold[id];
+  return val;
+}
+
+uint16_t getLineSensorMax(uint8_t id) {
+  if (id >= 16) return 0;
+  uint16_t val = 0;
+  if (lockLineSensors()) {
+    val = line_sensor_max[id];
+    unlockLineSensors();
+  }
+  return val;
+}
+
+uint16_t getLineSensorMin(uint8_t id) {
+  if (id >= 16) return 0;
+  uint16_t val = 0;
+  if (lockLineSensors()) {
+    val = line_sensor_min[id];
+    unlockLineSensors();
+  }
+  return val;
+}
+
+// Bulk snapshot in one lock/unlock cycle — cheaper than 16 individual
+// getLineSensorRaw()/getLineSensorDigital() calls when you need "all of
+// it right now" (e.g. STATE_LINE_DEBUG).
+void getLineSensorSnapshot(uint16_t rawOut[16], uint8_t digitalOut[16]) {
+  if (lockLineSensors()) {
+    memcpy(rawOut, line_sensor_raw, sizeof(line_sensor_raw));
+    memcpy(digitalOut, line_sensor_digital, sizeof(line_sensor_digital));
+    unlockLineSensors();
+  }
+}
+
+void printLineSensorCalibration() {
+  uint16_t min_s[16], max_s[16], thr_s[16], thrH_s[16], thrL_s[16];
+  if (lockLineSensors()) {
+    memcpy(min_s, line_sensor_min, sizeof(min_s));
+    memcpy(max_s, line_sensor_max, sizeof(max_s));
+    memcpy(thr_s, line_sensor_threshold, sizeof(thr_s));
+    memcpy(thrH_s, line_sensor_threshold_high, sizeof(thrH_s));
+    memcpy(thrL_s, line_sensor_threshold_low, sizeof(thrL_s));
+    unlockLineSensors();
+  }
+  // Serial I/O deliberately happens AFTER releasing the lock, so it can't
+  // stall the sensor task.
+  Serial.println(F("ch\tmin\tmax\trange\tmid\thigh\tlow"));
+  for (int i = 0; i < 16; i++) {
+    uint16_t range = (max_s[i] > min_s[i]) ? (max_s[i] - min_s[i]) : 0;
+    Serial.print(i); Serial.print('\t');
+    Serial.print(min_s[i]); Serial.print('\t');
+    Serial.print(max_s[i]); Serial.print('\t');
+    Serial.print(range); Serial.print('\t');
+    Serial.print(thr_s[i]); Serial.print('\t');
+    Serial.print(thrH_s[i]); Serial.print('\t');
+    Serial.println(thrL_s[i]);
+  }
 }
 
 bool isLineDetected() {
-  for (int i = 0; i < 16; i++) {
-    if (line_sensor_digital[i]) {
-      return true;
+  bool detected = false;
+  if (lockLineSensors()) {
+    for (int i = 0; i < 16; i++) {
+      if (line_sensor_digital[i]) {
+        detected = true;
+        break;
+      }
     }
+    unlockLineSensors();
   }
-  return false;
-}
-
-// Recomputes the high/low hysteresis bounds from the current midpoint
-// threshold using a fixed absolute margin (used when no min/max range
-// is available, e.g. defaults).
-static void applyHysteresisFromMidpoint(uint8_t i, uint16_t margin) {
-  line_sensor_threshold_high[i] = line_sensor_threshold[i] + margin;
-  line_sensor_threshold_low[i] =
-      (line_sensor_threshold[i] > margin) ? (line_sensor_threshold[i] - margin) : 0;
+  return detected;
 }
 
 void ensureLineSensorThresholdDefaults() {
+  if (!lockLineSensors()) return;
   for (int i = 0; i < 16; i++) {
     if (line_sensor_threshold[i] == 0) {
       line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
     }
     if (line_sensor_threshold_high[i] == 0 && line_sensor_threshold_low[i] == 0) {
-      // Default margin: small fraction of the default threshold value, capped/floored.
       uint16_t margin = clampMargin(
           static_cast<uint16_t>(line_sensor_threshold[i] * LINE_SENSOR_HYSTERESIS_PCT));
       applyHysteresisFromMidpoint(i, margin);
     }
   }
+  unlockLineSensors();
 }
 
 void calibrateLineSensorsAuto() {
   ensureLineSensorThresholdDefaults();
 
+  if (is_calibration_loaded) {
+    return;
+  }
+
+  if (!lockLineSensors()) return;
   for (int i = 0; i < 16; i++) {
     if (line_sensor_max[i] == 0 && line_sensor_min[i] == 0) {
       line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
@@ -314,77 +444,89 @@ void calibrateLineSensorsAuto() {
           (line_sensor_threshold[i] > margin) ? (line_sensor_threshold[i] - margin) : 0;
     }
   }
+  unlockLineSensors();
 }
 
+// Copies data out under a brief lock, then does the (slow) NVS write
+// unlocked so it doesn't stall the sensor task on Core 0.
 void saveCalibration() {
+  uint16_t th[16], thh[16], thl[16];
+  if (lockLineSensors()) {
+    memcpy(th, line_sensor_threshold, sizeof(th));
+    memcpy(thh, line_sensor_threshold_high, sizeof(thh));
+    memcpy(thl, line_sensor_threshold_low, sizeof(thl));
+    unlockLineSensors();
+  }
+
   saved_calibration.begin("calibration", false);
   for (int i = 0; i < 16; i++) {
-    saved_calibration.putFloat(("thresh" + String(i)).c_str(), line_sensor_threshold[i]);
-    saved_calibration.putFloat(("threshH" + String(i)).c_str(), line_sensor_threshold_high[i]);
-    saved_calibration.putFloat(("threshL" + String(i)).c_str(), line_sensor_threshold_low[i]);
+    saved_calibration.putFloat(("thresh" + String(i)).c_str(), th[i]);
+    saved_calibration.putFloat(("threshH" + String(i)).c_str(), thh[i]);
+    saved_calibration.putFloat(("threshL" + String(i)).c_str(), thl[i]);
   }
   saved_calibration.end();
 }
 
 void loadCalibration() {
+  uint16_t th[16], thh[16], thl[16];
+
   saved_calibration.begin("calibration", true);
   for (int i = 0; i < 16; i++) {
-    line_sensor_threshold[i] = saved_calibration.getFloat(("thresh" + String(i)).c_str(), 0.);
-    line_sensor_threshold_high[i] =
-        saved_calibration.getFloat(("threshH" + String(i)).c_str(), 0.);
-    line_sensor_threshold_low[i] =
-        saved_calibration.getFloat(("threshL" + String(i)).c_str(), 0.);
+    th[i] = saved_calibration.getFloat(("thresh" + String(i)).c_str(), 0.);
+    thh[i] = saved_calibration.getFloat(("threshH" + String(i)).c_str(), 0.);
+    thl[i] = saved_calibration.getFloat(("threshL" + String(i)).c_str(), 0.);
   }
   saved_calibration.end();
 
-  // Backward compatibility: if this NVS blob was saved by the old version
-  // of the code (no threshH/threshL keys), high/low will still be 0 here.
-  // Derive them from the midpoint so hysteresis still works immediately.
+  // Backward compatibility with NVS blobs saved before threshH/threshL existed.
   for (int i = 0; i < 16; i++) {
-    if (line_sensor_threshold_high[i] == 0 && line_sensor_threshold_low[i] == 0 &&
-        line_sensor_threshold[i] != 0) {
-      uint16_t margin = clampMargin(
-          static_cast<uint16_t>(line_sensor_threshold[i] * LINE_SENSOR_HYSTERESIS_PCT));
-      applyHysteresisFromMidpoint(i, margin);
+    if (thh[i] == 0 && thl[i] == 0 && th[i] != 0) {
+      uint16_t margin = clampMargin(static_cast<uint16_t>(th[i] * LINE_SENSOR_HYSTERESIS_PCT));
+      thh[i] = th[i] + margin;
+      thl[i] = (th[i] > margin) ? (th[i] - margin) : 0;
     }
+  }
+
+  if (lockLineSensors()) {
+    memcpy(line_sensor_threshold, th, sizeof(th));
+    memcpy(line_sensor_threshold_high, thh, sizeof(thh));
+    memcpy(line_sensor_threshold_low, thl, sizeof(thl));
+    unlockLineSensors();
   }
 
   is_calibration_loaded = true;
 }
 
 void lineSensorCalibrationBegin() {
+  if (!lockLineSensors()) return;
   for (int i = 0; i < 16; i++) {
     line_sensor_max[i] = 0;
     line_sensor_min[i] = 4095;
     line_sensor_debounce_count[i] = 0;
+    line_sensor_cal_hist_idx[i] = 0;
+    line_sensor_cal_hist_count[i] = 0;
   }
+  line_sensor_calibration_active = true;  // task starts accumulating from here
+  unlockLineSensors();
 }
 
 bool isCalibrationLoaded() {
   return is_calibration_loaded;
 }
 
-void lineSensorCalibrationUpdate() {
-  for (int i = 0; i < 16; i++) {
-    if (line_sensor_raw[i] > line_sensor_max[i]) {
-      line_sensor_max[i] = line_sensor_raw[i];
-    }
-    if (line_sensor_raw[i] < line_sensor_min[i]) {
-      line_sensor_min[i] = line_sensor_raw[i];
-    }
-  }
-}
-
 void lineSensorCalibrationEnd() {
-  for (int i = 0; i < 16; i++) {
-    uint16_t mid = (line_sensor_max[i] + line_sensor_min[i]) / 2;
-    uint16_t range = line_sensor_max[i] - line_sensor_min[i];
-    uint16_t margin = clampMarginToRange(
-        static_cast<uint16_t>(range * LINE_SENSOR_HYSTERESIS_PCT), range);
-
-    line_sensor_threshold[i] = mid;
-    line_sensor_threshold_high[i] = mid + margin;
-    line_sensor_threshold_low[i] = (mid > margin) ? (mid - margin) : 0;
+  if (lockLineSensors()) {
+    line_sensor_calibration_active = false;  // stop accumulation first
+    for (int i = 0; i < 16; i++) {
+      uint16_t mid = (line_sensor_max[i] + line_sensor_min[i]) / 2;
+      uint16_t range = line_sensor_max[i] - line_sensor_min[i];
+      uint16_t margin = clampMarginToRange(
+          static_cast<uint16_t>(range * LINE_SENSOR_HYSTERESIS_PCT), range);
+      line_sensor_threshold[i] = mid;
+      line_sensor_threshold_high[i] = mid + margin;
+      line_sensor_threshold_low[i] = (mid > margin) ? (mid - margin) : 0;
+    }
+    unlockLineSensors();
   }
   saveCalibration();
 }

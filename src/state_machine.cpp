@@ -157,52 +157,48 @@ void runStateMachine() {
   }
 
   case STATE_CALIBRATING: {
-    stopMotors();
-    displayOLED("SWIPE LINE TO CALIBRATE", "BTN 4 TO FINISH", "", "");
+      stopMotors();
+      displayOLED("SWIPE LINE TO CALIBRATE", "BTN 4 TO FINISH", "", "");
 
-    if (!is_calibrating) {
-        is_calibrating = true;
-        lineSensorCalibrationBegin();
-    }
+      if (!is_calibrating) {
+          is_calibrating = true;
+          lineSensorCalibrationBegin();  // Core-0 task now accumulates automatically
+      }
 
-    readLineSensors();
-    lineSensorCalibrationUpdate();
+      if (isButtonPressed(BTN_4)) {
+          lineSensorCalibrationEnd();
+          Serial.print("[LINE] CALIBRATION DONE. Thresholds: ");
+          for (int i = 0; i < 16; i++) {
+            Serial.printf("%d:%u ", i, getLineSensorThreshold(i));
+          }
+          Serial.println();
 
-    if (isButtonPressed(BTN_4)) {
-        lineSensorCalibrationEnd();
-        Serial.print("[LINE] CALIBRATION DONE. Thresholds: ");
-        for (int i = 0; i < 16; i++) {
-          Serial.printf("%d:%u ", i, getLineSensorThreshold(i));
-        }
-        Serial.println();
-
-        is_calibrating = false;
-        current_state = STATE_IDLE;
-        btn4_suppress_release = true;
-    }
-    break;
+          is_calibrating = false;
+          current_state = STATE_IDLE;
+          btn4_suppress_release = true;
+      }
+      break;
   }
 
   case STATE_LINE_DEBUG: {
-    char sensorMask[17];
-    float rawSensor[17];
+      static uint16_t rawSensor[16];
+      static uint8_t digSensor[16];
+      getLineSensorSnapshot(rawSensor, digSensor);
 
-    for (int i = 0; i < 16; i++) {
-      sensorMask[i] = getLineSensorDigital(i) ? '1' : '0';
-      rawSensor[i] = getLineSensorRaw(i);
-    }
+      char sensorMask[17];
+      for (int i = 0; i < 16; i++) {
+        sensorMask[i] = digSensor[i] ? '1' : '0';
+      }
+      sensorMask[16] = '\0';
 
-    sensorMask[16] = '\0';
+      displayOLED("LINE DEBUG", sensorMask, "", "BTN2=EXIT");
 
-    displayOLED("LINE DEBUG",  sensorMask, "", "BTN2=EXIT");
-    
-    for(int i = 0; i < 16; i++) {
-      Serial.printf("raw %d: %.2f\n", i, rawSensor[i]);
-    }
-    
-    break;
+      for (int i = 0; i < 16; i++) {
+        Serial.printf("raw %d: %u\n", i, rawSensor[i]);
+      }
+      break;
   }
-
+  
   case STATE_PID_TUNING: {
     if (isButtonPressed(BTN_4)) {
       if (!pid_menu_active) {
