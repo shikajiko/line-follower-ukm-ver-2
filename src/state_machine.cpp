@@ -9,13 +9,22 @@
 #include "web_server.h"
 
 #define PID_TEST_DRIVE_MS 250u
+#define MENU_ITEM_COUNT 5u
 
 uint8_t current_state = STATE_IDLE;
 bool pid_menu_active = false;
 uint8_t pid_menu_item = 0;
 static bool is_calibrating = false;
-static bool btn4_hold_fired = false;
-static bool btn4_suppress_release = false;
+static uint8_t menu_index = 0;
+
+// Main menu: BTN_2 = up, BTN_1 = down, BTN_4 = OK/select.
+static const char *const kMenuLabels[MENU_ITEM_COUNT] = {
+    "Start Mission", "Update Mission", "Calibrate", "Check Sensor",
+    "Tune PID"};
+
+static const uint8_t kMenuTargetState[MENU_ITEM_COUNT] = {
+    STATE_RUN_MISSION, STATE_WEB_SERVER, STATE_CALIBRATING,
+    STATE_LINE_DEBUG,  STATE_PID_TUNING};
 
 void runStateMachine() {
   const uint32_t now = millis();
@@ -35,6 +44,12 @@ void runStateMachine() {
     loadMissionFile();
   }
 
+  static uint8_t last_state = STATE_IDLE;
+
+  // ---------------------------------------------------------------------
+  // BTN_3: short tap = Back (to the main menu), held 3s = power off.
+  // Exempt while in PID_TUNING, where BTN_3 is the "test drive" button.
+  // ---------------------------------------------------------------------
   bool btn3_poweroff = buttonHeld(BTN_3, 3000);
 
   if (isButtonDown(BTN_3) && current_state != STATE_PID_TUNING) {
@@ -48,54 +63,35 @@ void runStateMachine() {
       uint32_t remain_ms = (held_ms < 3000) ? (3000 - held_ms) : 0;
       float remain_s = remain_ms / 1000.0f;
       snprintf(countdown_buf, sizeof(countdown_buf), "%.1f s", remain_s);
-      displayOLED("HOLD BTN3", "Power off in", countdown_buf, "Release=Cancel");
+      const char *release_hint =
+          (current_state == STATE_IDLE) ? "Release=Cancel" : "Release=Back";
+      displayOLED("HOLD BTN3", "Power off in", countdown_buf, release_hint);
       return;
     }
   }
 
-  bool btn1_run_webserver = buttonHeld(BTN_1, 1500);
-  bool btn2_pid_tuning = buttonHeld(BTN_2, 1000);
-  bool btn4_line_debug = buttonHeld(BTN_4, 1000);
+  if (current_state != STATE_IDLE && current_state != STATE_PID_TUNING &&
+      isButtonReleased(BTN_3) && !btn3_poweroff) {
+    current_state = STATE_IDLE;
+    return;
+  }
 
-  static uint8_t last_state = STATE_IDLE;
-
-  if (current_state != STATE_PID_TUNING) {
-    if (btn2_pid_tuning) {
-        current_state = STATE_PID_TUNING;
-        return;
-    }
-    
-    if (isButtonDown(BTN_2)) {
-      char countdown_buf[32];
-      uint32_t held_ms = buttonHeldMs(BTN_2);
-      uint32_t remain_ms = (held_ms < 1000) ? (1000 - held_ms) : 0;
-      float remain_s = remain_ms / 1000.0f;
-      snprintf(countdown_buf, sizeof(countdown_buf), "%.1f s", remain_s);
-      displayOLED("HOLD BTN2", "OPEN PID TUNING", countdown_buf, "Release=Exit");
+  // ---------------------------------------------------------------------
+  // Main menu navigation (only active while parked in STATE_IDLE):
+  //   BTN_2 = up, BTN_1 = down, BTN_4 = OK (enter selected mode).
+  // ---------------------------------------------------------------------
+  if (current_state == STATE_IDLE) {
+    if (isButtonPressed(BTN_2)) {
+      menu_index = (menu_index + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;
       return;
     }
-
-    if (isButtonReleased(BTN_2)) {
-        current_state = STATE_IDLE;
-        return;
+    if (isButtonPressed(BTN_1)) {
+      menu_index = (menu_index + 1) % MENU_ITEM_COUNT;
+      return;
     }
-
-    if (btn4_line_debug) {
-        if (current_state == STATE_IDLE) {
-            btn4_hold_fired = true;
-            current_state = STATE_LINE_DEBUG;
-            return;
-        }
-    }
-
-    if (isButtonReleased(BTN_4)) {
-        if (btn4_suppress_release) {
-            btn4_suppress_release = false;
-        } else if (!btn4_hold_fired && current_state == STATE_IDLE && last_state != STATE_PID_TUNING) {
-            current_state = STATE_CALIBRATING;
-        }
-        btn4_hold_fired = false;
-        return;
+    if (isButtonPressed(BTN_4)) {
+      current_state = kMenuTargetState[menu_index];
+      return;
     }
   }
 
@@ -112,6 +108,7 @@ void runStateMachine() {
     if (current_state == STATE_IDLE) {
       pid_menu_active = false;
       pid_menu_item = 0;
+      menu_index = 0;
       stopMotors();
     }
 
@@ -131,19 +128,7 @@ void runStateMachine() {
   case STATE_IDLE: {
     resetMissionState();
     disablePID();
-    displayOLED("BTN1=START", "BTN1-HOLD=MISSION", "BTN2-HOLD=PID", "BTN4=CALIBRATE");
-
-    if (isButtonDown(BTN_1)) {
-      if (btn1_run_webserver) {
-        current_state = STATE_WEB_SERVER;
-        return;
-      }
-    }
-
-    if (isButtonReleased(BTN_1)) {
-      current_state = STATE_RUN_MISSION;
-      return;
-    }
+    displayMenuOLED("SELECT MODE", kMenuLabels, MENU_ITEM_COUNT, menu_index);
     break;
   }
 
@@ -158,7 +143,7 @@ void runStateMachine() {
 
   case STATE_CALIBRATING: {
       stopMotors();
-      displayOLED("SWIPE LINE TO CALIBRATE", "BTN 4 TO FINISH", "", "");
+      displayOLED("SWIPE LINE TO CALIBRATE", "BTN4=Finish", "BTN3=Back", "");
 
       if (!is_calibrating) {
           is_calibrating = true;
@@ -175,7 +160,6 @@ void runStateMachine() {
 
           is_calibrating = false;
           current_state = STATE_IDLE;
-          btn4_suppress_release = true;
       }
       break;
   }
@@ -191,7 +175,7 @@ void runStateMachine() {
       }
       sensorMask[16] = '\0';
 
-      displayOLED("LINE DEBUG", sensorMask, "", "BTN2=EXIT");
+      displayOLED("LINE DEBUG", sensorMask, "", "BTN3=BACK");
 
       for (int i = 0; i < 16; i++) {
         Serial.printf("raw %d: %u\n", i, rawSensor[i]);
@@ -208,7 +192,6 @@ void runStateMachine() {
         pid_menu_item++;
       } else {
         current_state = STATE_IDLE;
-        btn4_suppress_release = true;   
       }
     }
 

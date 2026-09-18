@@ -60,11 +60,18 @@ static uint8_t line_sensor_cal_hist_idx[16] = {0};
 static uint8_t line_sensor_cal_hist_count[16] = {0};
 
 // Tunables -------------------------------------------------------------
-#define LINE_SENSOR_HYSTERESIS_PCT 0.08f
+#define LINE_SENSOR_HYSTERESIS_PCT 0.01f
 #define LINE_SENSOR_HYSTERESIS_MAX_COUNTS 100
 #define LINE_SENSOR_HYSTERESIS_MIN_COUNTS 20
 #define LINE_SENSOR_HYSTERESIS_RANGE_FRACTION 0.30f
 #define LINE_SENSOR_DEBOUNCE_N 1
+
+// Minimum acceptable (max - min) spread from a calibration sweep for a
+// channel to be considered validly calibrated. Below this, the channel
+// probably didn't see real black/white contrast (weak sensor, misaligned,
+// dust, or the sweep just never passed that channel over both surfaces).
+// Tune to your hardware/ADC range (12-bit ADC here, 0-4095).
+#define LINE_SENSOR_MIN_VALID_RANGE 10
 
 // How often the Core-0 task scans all 16 channels. Matches the old
 // effective rate (readLineSensors() once per ~1ms main-loop iteration),
@@ -83,9 +90,20 @@ static uint16_t clampMargin(uint16_t margin) {
   return margin;
 }
 
+// NOTE: now also enforces the same MIN_COUNTS floor as clampMargin().
+// Previously this only capped the margin (ceiling at MAX_COUNTS and at
+// 30% of range) with no floor, so channels with a small calibrated range
+// could end up with a near-zero margin. That pushes threshold_high right
+// up against that channel's calibration-time max, so a channel already
+// near its ceiling could then never satisfy `raw > threshold_high` again
+// -> permanently reads 0 even on solid black. Callers should also check
+// range against LINE_SENSOR_MIN_VALID_RANGE before trusting the result.
 static uint16_t clampMarginToRange(uint16_t margin, uint16_t range) {
   if (margin > LINE_SENSOR_HYSTERESIS_MAX_COUNTS) {
     margin = LINE_SENSOR_HYSTERESIS_MAX_COUNTS;
+  }
+  if (margin < LINE_SENSOR_HYSTERESIS_MIN_COUNTS) {
+    margin = LINE_SENSOR_HYSTERESIS_MIN_COUNTS;
   }
   uint16_t range_cap =
       static_cast<uint16_t>(range * LINE_SENSOR_HYSTERESIS_RANGE_FRACTION);
@@ -386,7 +404,11 @@ void printLineSensorCalibration() {
     Serial.print(range); Serial.print('\t');
     Serial.print(thr_s[i]); Serial.print('\t');
     Serial.print(thrH_s[i]); Serial.print('\t');
-    Serial.println(thrL_s[i]);
+    Serial.print(thrL_s[i]);
+    if (range < LINE_SENSOR_MIN_VALID_RANGE) {
+      Serial.print(F("\t<-- LOW RANGE, check sensor/alignment"));
+    }
+    Serial.println();
   }
 }
 
@@ -435,13 +457,23 @@ void calibrateLineSensorsAuto() {
       applyHysteresisFromMidpoint(i, margin);
     } else {
       uint16_t range = line_sensor_max[i] - line_sensor_min[i];
-      uint16_t margin = clampMarginToRange(
-          static_cast<uint16_t>(range * LINE_SENSOR_HYSTERESIS_PCT), range);
-      line_sensor_threshold[i] =
-          static_cast<uint16_t>((line_sensor_max[i] + line_sensor_min[i]) / 2);
-      line_sensor_threshold_high[i] = line_sensor_threshold[i] + margin;
-      line_sensor_threshold_low[i] =
-          (line_sensor_threshold[i] > margin) ? (line_sensor_threshold[i] - margin) : 0;
+      if (range < LINE_SENSOR_MIN_VALID_RANGE) {
+        // Not enough contrast seen for this channel — don't commit a
+        // near-zero-margin threshold that could get stuck. Fall back to
+        // the default threshold instead of trusting a bad calibration.
+        line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
+        uint16_t margin = clampMargin(
+            static_cast<uint16_t>(line_sensor_threshold[i] * LINE_SENSOR_HYSTERESIS_PCT));
+        applyHysteresisFromMidpoint(i, margin);
+      } else {
+        uint16_t margin = clampMarginToRange(
+            static_cast<uint16_t>(range * LINE_SENSOR_HYSTERESIS_PCT), range);
+        line_sensor_threshold[i] =
+            static_cast<uint16_t>((line_sensor_max[i] + line_sensor_min[i]) / 2);
+        line_sensor_threshold_high[i] = line_sensor_threshold[i] + margin;
+        line_sensor_threshold_low[i] =
+            (line_sensor_threshold[i] > margin) ? (line_sensor_threshold[i] - margin) : 0;
+      }
     }
   }
   unlockLineSensors();
@@ -518,8 +550,20 @@ void lineSensorCalibrationEnd() {
   if (lockLineSensors()) {
     line_sensor_calibration_active = false;  // stop accumulation first
     for (int i = 0; i < 16; i++) {
-      uint16_t mid = (line_sensor_max[i] + line_sensor_min[i]) / 2;
       uint16_t range = line_sensor_max[i] - line_sensor_min[i];
+      if (range < LINE_SENSOR_MIN_VALID_RANGE) {
+        // This channel never saw a real black/white swing during the
+        // sweep. Leave its existing threshold alone (don't commit a
+        // near-zero-margin threshold_high that could get permanently
+        // stuck) and flag it so it's obvious from Serial output.
+        Serial.print(F("WARNING: line sensor channel "));
+        Serial.print(i);
+        Serial.print(F(" calibration range too small ("));
+        Serial.print(range);
+        Serial.println(F("), keeping previous threshold"));
+        continue;
+      }
+      uint16_t mid = (line_sensor_max[i] + line_sensor_min[i]) / 2;
       uint16_t margin = clampMarginToRange(
           static_cast<uint16_t>(range * LINE_SENSOR_HYSTERESIS_PCT), range);
       line_sensor_threshold[i] = mid;
