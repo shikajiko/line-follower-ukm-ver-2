@@ -7,23 +7,25 @@
 #include "line_sensor.h"
 #include "mission.h"
 #include "web_server.h"
+#include "encoder_calibrate.h"
 
 #define PID_TEST_DRIVE_MS 250u
-#define MENU_ITEM_COUNT 5u
+#define MENU_ITEM_COUNT 6u
 
 uint8_t current_state = STATE_IDLE;
 bool pid_menu_active = false;
+bool encoder_cal_menu_active = false;
 uint8_t pid_menu_item = 0;
 static bool is_calibrating = false;
 static uint8_t menu_index = 0;
 
 static const char *const kMenuLabels[MENU_ITEM_COUNT] = {
-    "Start Mission", "Update Mission", "Calibrate", "Check Sensor",
-    "Tune PID"};
+    "Start Mission", "Update Mission", "Calibrate Sensor", "Check Sensor",
+    "Calibrate Encoder", "Tune PID"};
 
 static const uint8_t kMenuTargetState[MENU_ITEM_COUNT] = {
     STATE_RUN_MISSION, STATE_WEB_SERVER, STATE_CALIBRATING,
-    STATE_LINE_DEBUG,  STATE_PID_TUNING};
+    STATE_LINE_DEBUG,  STATE_CALIBRATE_ENCODER, STATE_PID_TUNING};
 
 void runStateMachine() {
   const uint32_t now = millis();
@@ -349,6 +351,68 @@ void runStateMachine() {
   case STATE_JUST_LOADED_MISSION:
     break;
 
+  case STATE_CALIBRATE_ENCODER: {
+    static float current_val = 10.f;
+    if (!encoder_cal_menu_active) {
+      displayOLED("MENJALANKAN", "SAMPAI", "PULSA ENC", "250");
+      calibrateEncoder();
+      current_val = getCalibratedEncoderValue();
+    }
+
+    encoder_cal_menu_active = true;
+    float val_step = 0.1f;
+
+    const bool btn1_fast =
+      (isButtonDown(BTN_1)) &&
+      (buttonHeldMs(BTN_1) >= 1000);
+
+    const bool btn2_fast =
+        (isButtonDown(BTN_2)) &&
+        (buttonHeldMs(BTN_2) >= 1000);
+
+    if (btn1_fast || btn2_fast) {
+      val_step = 1.f;
+    }
+
+    static uint32_t last_repeat_ms = 0;
+
+    const bool btn1_adjust =
+        isButtonPressed(BTN_1) ||
+        (btn1_fast && (now - last_repeat_ms >= 80));
+
+    const bool btn2_adjust =
+        isButtonPressed(BTN_2) ||
+        (btn2_fast && (now - last_repeat_ms >= 80));
+
+    if (btn1_adjust) {
+      current_val -= val_step;
+      if (current_val < 1) current_val = 1;
+    }
+
+    if (btn2_adjust) {
+      current_val += val_step;
+      if (current_val > 1000) current_val = 1000;   
+    }
+
+    if (isButtonPressed(BTN_4)) {
+      displayOLED("ENCODER", "CALIBRATION", "SET", "");
+      saveEncoderCalibration(current_val);
+      encoder_cal_menu_active = false;
+      delay(100);
+      current_state = STATE_IDLE;
+      return;
+    }
+
+    char line1[32];
+    char line2[32];
+    char line3[32];
+    snprintf(line1, sizeof(line1), "SEJAUH (CM):%.2f", current_val);
+    snprintf(line2, sizeof(line2), "BTN1=- BTN2=+");
+    snprintf(line3, sizeof(line2), "BTN4=Done");
+    displayOLED("ROBOT BERGERAK: ", line1, line2, line3);
+
+    break;
+  }
   default:
     displayOLED("ERROR", "Unknown state", "", "");
     break;

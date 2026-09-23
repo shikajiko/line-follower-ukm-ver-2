@@ -10,6 +10,7 @@
 #define STATE_LINE_DEBUG 4
 #define STATE_WEB_SERVER 5
 #define STATE_JUST_LOADED_MISSION 6
+#define STATE_CALIBRATE_ENCODER 7
 
 void runStateMachine();
 
