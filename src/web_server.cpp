@@ -480,20 +480,6 @@ bool isWebServerStarted() {
 }
 
 void printHotspotInformation() {    
-
-    if (sta_connected)
-    {
-        if (MDNS.begin(hostname.c_str()))
-        {
-            MDNS.addService("http", "tcp", 80);
-            Serial.printf("[WEB] mDNS started: http://%s.local/\n", hostname.c_str());
-        }
-        else
-        {
-            Serial.println("[WEB] mDNS failed to start");
-        }
-    }
-
     char line1buf[24];
     char line2buf[24];
     char line3buf[24];
@@ -504,8 +490,6 @@ void printHotspotInformation() {
         staIp = WiFi.localIP();
         snprintf(line1buf, sizeof(line1buf), "WiFi \"%s\"", wifiGetStaSsid().c_str());
         snprintf(line2buf, sizeof(line2buf), "http://%u.%u.%u.%u/", staIp[0], staIp[1], staIp[2], staIp[3]);
-        snprintf(line3buf, sizeof(line3buf), "or http://%s.local/", hostname.c_str());
-        snprintf(line4buf, sizeof(line4buf), "AP \"%s\"", apSsid.c_str());
 
         Serial.printf("[WEB] Also reachable via hotspot \"%s\" at http://%u.%u.%u.%u/\n",
                       apSsid.c_str(), apIp[0], apIp[1], apIp[2], apIp[3]);
@@ -522,6 +506,4 @@ void printHotspotInformation() {
 
     Serial.printf("[WEB] Hotspot \"%s\" up, connect and browse to http://%u.%u.%u.%u/\n",
                   apSsid.c_str(), apIp[0], apIp[1], apIp[2], apIp[3]);
-
-
 }
