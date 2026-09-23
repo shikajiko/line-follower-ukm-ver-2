@@ -12,28 +12,18 @@ static uint16_t line_sensor_raw[16] = {0};
 static uint8_t line_sensor_digital[16] = {0};
 static uint16_t line_sensor_max[16] = {0};
 static uint16_t line_sensor_min[16] = {0};
-static uint16_t line_sensor_threshold[16] = {0};       // kept for compatibility (midpoint, used by getLineSensorThreshold())
-static uint16_t line_sensor_threshold_high[16] = {0};  // turn-ON bound (hysteresis)
-static uint16_t line_sensor_threshold_low[16] = {0};   // turn-OFF bound (hysteresis)
+static uint16_t line_sensor_threshold[16] = {0};       
+static uint16_t line_sensor_threshold_high[16] = {0};  
+static uint16_t line_sensor_threshold_low[16] = {0};
 static uint8_t line_sensor_debounce_count[16] = {0};
 static Preferences saved_calibration;
 static bool is_calibration_loaded = false;
 
-// --- Multicore additions -------------------------------------------------
-// All of the arrays above are written by lineSensorTask() on Core 0 and
-// read/occasionally written by application code running on Core 1
-// (state machine, mission, locomotion). This mutex serializes access.
 static SemaphoreHandle_t line_sensor_mutex = nullptr;
 static TaskHandle_t line_sensor_task_handle = nullptr;
 
-// Set true/false only by lineSensorCalibrationBegin()/End(), read only by
-// the Core-0 task. Both sides always touch this under line_sensor_mutex,
-// so no separate atomic type is needed.
 static volatile bool line_sensor_calibration_active = false;
 
-// Before startLineSensorTask() has been called, line_sensor_mutex is null
-// and nothing is running on Core 0 yet, so it's safe to just proceed
-// unlocked (e.g. code that runs during setup(), before the task exists).
 static inline bool lockLineSensors() {
   if (line_sensor_mutex == nullptr) {
     return true;
@@ -45,40 +35,20 @@ static inline void unlockLineSensors() {
     xSemaphoreGive(line_sensor_mutex);
   }
 }
-// ---------------------------------------------------------------------
 
-// Rolling-average smoothing buffer used only during calibration, to stop
-// a single noisy ADC sample (MUX crosstalk, electrical glitch) from
-// permanently setting a channel's max/min to an outlier. Without this,
-// one bad tick sets threshold_high near a value that channel can
-// basically never reach again in normal use -> looks like "sensor stuck
-// at 0 except at one specific spot" (wherever the glitch happens to
-// reproduce by chance).
 #define LINE_SENSOR_CAL_SAMPLE_WINDOW 3
 static uint16_t line_sensor_cal_history[16][LINE_SENSOR_CAL_SAMPLE_WINDOW] = {{0}};
 static uint8_t line_sensor_cal_hist_idx[16] = {0};
 static uint8_t line_sensor_cal_hist_count[16] = {0};
 
-// Tunables -------------------------------------------------------------
 #define LINE_SENSOR_HYSTERESIS_PCT 0.01f
 #define LINE_SENSOR_HYSTERESIS_MAX_COUNTS 100
 #define LINE_SENSOR_HYSTERESIS_MIN_COUNTS 20
-#define LINE_SENSOR_HYSTERESIS_RANGE_FRACTION 0.30f
+#define LINE_SENSOR_HYSTERESIS_RANGE_FRACTION 0.05f
 #define LINE_SENSOR_DEBOUNCE_N 1
 
-// Minimum acceptable (max - min) spread from a calibration sweep for a
-// channel to be considered validly calibrated. Below this, the channel
-// probably didn't see real black/white contrast (weak sensor, misaligned,
-// dust, or the sweep just never passed that channel over both surfaces).
-// Tune to your hardware/ADC range (12-bit ADC here, 0-4095).
-#define LINE_SENSOR_MIN_VALID_RANGE 10
-
-// How often the Core-0 task scans all 16 channels. Matches the old
-// effective rate (readLineSensors() once per ~1ms main-loop iteration),
-// but is now decoupled from Serial/display work on Core 1, so it should
-// actually be steadier than before.
+#define LINE_SENSOR_MIN_VALID_RANGE 5
 #define LINE_SENSOR_SCAN_PERIOD_MS 1
-// ------------------------------------------------------------------------
 
 static uint16_t clampMargin(uint16_t margin) {
   if (margin > LINE_SENSOR_HYSTERESIS_MAX_COUNTS) {
@@ -90,14 +60,6 @@ static uint16_t clampMargin(uint16_t margin) {
   return margin;
 }
 
-// NOTE: now also enforces the same MIN_COUNTS floor as clampMargin().
-// Previously this only capped the margin (ceiling at MAX_COUNTS and at
-// 30% of range) with no floor, so channels with a small calibrated range
-// could end up with a near-zero margin. That pushes threshold_high right
-// up against that channel's calibration-time max, so a channel already
-// near its ceiling could then never satisfy `raw > threshold_high` again
-// -> permanently reads 0 even on solid black. Callers should also check
-// range against LINE_SENSOR_MIN_VALID_RANGE before trusting the result.
 static uint16_t clampMarginToRange(uint16_t margin, uint16_t range) {
   if (margin > LINE_SENSOR_HYSTERESIS_MAX_COUNTS) {
     margin = LINE_SENSOR_HYSTERESIS_MAX_COUNTS;
@@ -186,8 +148,6 @@ static void selectMUXChannel(uint8_t channel) {
   delayMicroseconds(3);
 }
 
-// --- Unlocked internals: only ever called while line_sensor_mutex is held ---
-
 static uint16_t readLineSensor(uint8_t channel) {
   selectMUXChannel(channel);
   uint16_t raw = analogRead(MUX_ADC_PIN);
@@ -225,8 +185,6 @@ static void applyHysteresisFromMidpoint(uint8_t i, uint16_t margin) {
       (line_sensor_threshold[i] > margin) ? (line_sensor_threshold[i] - margin) : 0;
 }
 
-// Calibration accumulation. Only called from scanAllChannelsLocked() while
-// line_sensor_calibration_active is true, and always under the mutex.
 void lineSensorCalibrationUpdate() {
   for (int i = 0; i < 16; i++) {
     uint8_t idx = line_sensor_cal_hist_idx[i];
@@ -252,8 +210,7 @@ void lineSensorCalibrationUpdate() {
   }
 }
 
-// One full 16-channel scan + threshold update + (optional) calibration
-// accumulation. Caller MUST hold line_sensor_mutex.
+
 static void scanAllChannelsLocked() {
   for (int i = 0; i < 16; i++) {
     readLineSensor(i);
@@ -263,8 +220,6 @@ static void scanAllChannelsLocked() {
     lineSensorCalibrationUpdate();
   }
 }
-
-// --- Core 0 task -----------------------------------------------------------
 
 static void lineSensorTask(void *pvParameters) {
   const TickType_t period = pdMS_TO_TICKS(LINE_SENSOR_SCAN_PERIOD_MS);
@@ -279,8 +234,6 @@ static void lineSensorTask(void *pvParameters) {
   }
 }
 
-// Call once from setup(), AFTER initMUX()/initADC() have configured the
-// relevant pins. Safe to call more than once (no-ops after the first).
 void startLineSensorTask() {
   if (line_sensor_mutex == nullptr) {
     line_sensor_mutex = xSemaphoreCreateMutex();
@@ -291,18 +244,13 @@ void startLineSensorTask() {
         "LineSensorTask",
         4096,
         nullptr,
-        2,      // priority: above default loopTask, below anything hard-real-time
+        2,     
         &line_sensor_task_handle,
-        0       // Core 0
+        0       
     );
   }
 }
 
-// --- Public API (all now thread-safe) --------------------------------------
-
-// Manual/blocking full scan. No longer needed in normal operation — the
-// Core-0 task does this continuously — but kept for one-off/manual use
-// (e.g. before startLineSensorTask() is called, or in test code).
 void readLineSensors() {
   if (lockLineSensors()) {
     scanAllChannelsLocked();
@@ -372,9 +320,6 @@ uint16_t getLineSensorMin(uint8_t id) {
   return val;
 }
 
-// Bulk snapshot in one lock/unlock cycle — cheaper than 16 individual
-// getLineSensorRaw()/getLineSensorDigital() calls when you need "all of
-// it right now" (e.g. STATE_LINE_DEBUG).
 void getLineSensorSnapshot(uint16_t rawOut[16], uint8_t digitalOut[16]) {
   if (lockLineSensors()) {
     memcpy(rawOut, line_sensor_raw, sizeof(line_sensor_raw));
@@ -393,8 +338,7 @@ void printLineSensorCalibration() {
     memcpy(thrL_s, line_sensor_threshold_low, sizeof(thrL_s));
     unlockLineSensors();
   }
-  // Serial I/O deliberately happens AFTER releasing the lock, so it can't
-  // stall the sensor task.
+
   Serial.println(F("ch\tmin\tmax\trange\tmid\thigh\tlow"));
   for (int i = 0; i < 16; i++) {
     uint16_t range = (max_s[i] > min_s[i]) ? (max_s[i] - min_s[i]) : 0;
@@ -458,9 +402,6 @@ void calibrateLineSensorsAuto() {
     } else {
       uint16_t range = line_sensor_max[i] - line_sensor_min[i];
       if (range < LINE_SENSOR_MIN_VALID_RANGE) {
-        // Not enough contrast seen for this channel — don't commit a
-        // near-zero-margin threshold that could get stuck. Fall back to
-        // the default threshold instead of trusting a bad calibration.
         line_sensor_threshold[i] = LINE_SENSOR_THRESHOLD;
         uint16_t margin = clampMargin(
             static_cast<uint16_t>(line_sensor_threshold[i] * LINE_SENSOR_HYSTERESIS_PCT));
@@ -479,8 +420,6 @@ void calibrateLineSensorsAuto() {
   unlockLineSensors();
 }
 
-// Copies data out under a brief lock, then does the (slow) NVS write
-// unlocked so it doesn't stall the sensor task on Core 0.
 void saveCalibration() {
   uint16_t th[16], thh[16], thl[16];
   if (lockLineSensors()) {
@@ -510,7 +449,6 @@ void loadCalibration() {
   }
   saved_calibration.end();
 
-  // Backward compatibility with NVS blobs saved before threshH/threshL existed.
   for (int i = 0; i < 16; i++) {
     if (thh[i] == 0 && thl[i] == 0 && th[i] != 0) {
       uint16_t margin = clampMargin(static_cast<uint16_t>(th[i] * LINE_SENSOR_HYSTERESIS_PCT));
@@ -538,7 +476,7 @@ void lineSensorCalibrationBegin() {
     line_sensor_cal_hist_idx[i] = 0;
     line_sensor_cal_hist_count[i] = 0;
   }
-  line_sensor_calibration_active = true;  // task starts accumulating from here
+  line_sensor_calibration_active = true;  
   unlockLineSensors();
 }
 
@@ -548,14 +486,10 @@ bool isCalibrationLoaded() {
 
 void lineSensorCalibrationEnd() {
   if (lockLineSensors()) {
-    line_sensor_calibration_active = false;  // stop accumulation first
+    line_sensor_calibration_active = false;  
     for (int i = 0; i < 16; i++) {
       uint16_t range = line_sensor_max[i] - line_sensor_min[i];
       if (range < LINE_SENSOR_MIN_VALID_RANGE) {
-        // This channel never saw a real black/white swing during the
-        // sweep. Leave its existing threshold alone (don't commit a
-        // near-zero-margin threshold_high that could get permanently
-        // stuck) and flag it so it's obvious from Serial output.
         Serial.print(F("WARNING: line sensor channel "));
         Serial.print(i);
         Serial.print(F(" calibration range too small ("));

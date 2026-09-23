@@ -18,6 +18,7 @@
 bool mountFilesystem();
 bool loadMissionFile();
 bool parseMissionJSON(const JsonDocument &doc);
+extern bool justLoadedMission;
 
 // ---- HTTP server lifecycle ----
 void startMissionWebServer();
@@ -33,3 +34,5 @@ void enableHotspot();
 // ---- Status ----
 bool isMissionLoaded();
 bool isWebServerStarted();
+
+void printHotspotInformation();

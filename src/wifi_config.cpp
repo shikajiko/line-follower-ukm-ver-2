@@ -27,7 +27,6 @@ static String toLowerAlnumHyphen(const String &in)
         {
             out += '-';
         }
-        // any other character is dropped
     }
     if (out.length() == 0)
         out = "robot";
@@ -39,8 +38,6 @@ void wifiConfigInit()
     if (s_initialized)
         return;
 
-    // Derive the MAC-based suffix once, from the STA MAC (stable regardless
-    // of which mode is active).
     uint8_t mac[6];
     WiFi.macAddress(mac);
     char buf[7];
@@ -78,8 +75,7 @@ String wifiGetApPassword()
 {
     Preferences prefs;
     prefs.begin(WIFI_PREF_NAMESPACE, true);
-    // getString with a default that's never returned when the key was
-    // explicitly saved as empty (open network), so we check exists() first.
+    
     String pass;
     if (prefs.isKey(KEY_AP_PASS))
         pass = prefs.getString(KEY_AP_PASS, "");

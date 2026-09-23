@@ -17,7 +17,6 @@ uint8_t pid_menu_item = 0;
 static bool is_calibrating = false;
 static uint8_t menu_index = 0;
 
-// Main menu: BTN_2 = up, BTN_1 = down, BTN_4 = OK/select.
 static const char *const kMenuLabels[MENU_ITEM_COUNT] = {
     "Start Mission", "Update Mission", "Calibrate", "Check Sensor",
     "Tune PID"};
@@ -44,12 +43,16 @@ void runStateMachine() {
     loadMissionFile();
   }
 
-  static uint8_t last_state = STATE_IDLE;
+  enableHotspot();
+  handleMissionWebServer();
 
-  // ---------------------------------------------------------------------
-  // BTN_3: short tap = Back (to the main menu), held 3s = power off.
-  // Exempt while in PID_TUNING, where BTN_3 is the "test drive" button.
-  // ---------------------------------------------------------------------
+  static uint8_t last_state = STATE_IDLE;
+  
+  if (justLoadedMission) {
+    current_state = STATE_JUST_LOADED_MISSION;
+    justLoadedMission = false;
+  }
+
   bool btn3_poweroff = buttonHeld(BTN_3, 3000);
 
   if (isButtonDown(BTN_3) && current_state != STATE_PID_TUNING) {
@@ -76,10 +79,6 @@ void runStateMachine() {
     return;
   }
 
-  // ---------------------------------------------------------------------
-  // Main menu navigation (only active while parked in STATE_IDLE):
-  //   BTN_2 = up, BTN_1 = down, BTN_4 = OK (enter selected mode).
-  // ---------------------------------------------------------------------
   if (current_state == STATE_IDLE) {
     if (isButtonPressed(BTN_2)) {
       menu_index = (menu_index + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;
@@ -344,8 +343,10 @@ void runStateMachine() {
   }
 
   case STATE_WEB_SERVER:
-    enableHotspot();
-    handleMissionWebServer();
+    printHotspotInformation();
+    break;
+
+  case STATE_JUST_LOADED_MISSION:
     break;
 
   default:

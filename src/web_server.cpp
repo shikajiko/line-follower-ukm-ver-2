@@ -15,9 +15,17 @@
 static WebServer webServer(80);
 static bool web_server_started = false;
 static bool is_mission_loaded = false;
+bool justLoadedMission = false;
 static bool fs_mounted = false;
 static bool sta_connected = false;
 
+static String apSsid;
+static String apPassword;
+static String hostname;
+
+static IPAddress apIp;
+static IPAddress staIp;
+   
 #define MISSION_PREF_NAMESPACE "missions"
 #define MISSION_PREF_KEY "data"
 #define MISSION_PREF_COUNT_KEY "count"
@@ -273,7 +281,8 @@ void handleUpdateMission()
 
     is_mission_loaded = true;
 
-    displayOLED("MISSION", "LOADED", "", "");
+    displayOLED("MISSION", "LOADED", "PRESS BTN 3", "TO MENU");
+    justLoadedMission = true;
 
     Serial.printf("Loaded %d missions.\n", NUM_STATES);
 
@@ -406,8 +415,6 @@ void handleMissionWebServer() {
     }
 }
 
-// Attempts to join the saved home/phone WiFi as a station. Returns true on
-// success. Blocks for up to WIFI_STA_CONNECT_TIMEOUT_MS.
 static bool connectStationMode()
 {
     String ssid = wifiGetStaSsid();
@@ -442,30 +449,38 @@ static bool connectStationMode()
 
 void enableHotspot() {
     if (web_server_started) {
-        // Already running; nothing to do.
         return;
     }
 
     wifiConfigInit();
-
-    // AP + STA simultaneously: the hotspot is always available as a
-    // fallback, and we additionally try to join a saved home/phone network
-    // so the user doesn't have to switch off their own WiFi.
     WiFi.mode(WIFI_AP_STA);
 
-    String apSsid = wifiGetApSsid();
-    String apPassword = wifiGetApPassword();
+    apSsid = wifiGetApSsid();
+    apPassword = wifiGetApPassword();
 
     if (apPassword.length() == 0)
         WiFi.softAP(apSsid.c_str());
     else
         WiFi.softAP(apSsid.c_str(), apPassword.c_str());
 
-    IPAddress apIp = WiFi.softAPIP();
+    apIp = WiFi.softAPIP();
 
     sta_connected = connectStationMode();
+    hostname = wifiGetHostname();
 
-    String hostname = wifiGetHostname();
+    startMissionWebServer();
+}
+
+bool isMissionLoaded() {
+    return is_mission_loaded;
+}
+
+bool isWebServerStarted() {
+    return web_server_started;
+}
+
+void printHotspotInformation() {    
+
     if (sta_connected)
     {
         if (MDNS.begin(hostname.c_str()))
@@ -486,7 +501,7 @@ void enableHotspot() {
 
     if (sta_connected)
     {
-        IPAddress staIp = WiFi.localIP();
+        staIp = WiFi.localIP();
         snprintf(line1buf, sizeof(line1buf), "WiFi \"%s\"", wifiGetStaSsid().c_str());
         snprintf(line2buf, sizeof(line2buf), "http://%u.%u.%u.%u/", staIp[0], staIp[1], staIp[2], staIp[3]);
         snprintf(line3buf, sizeof(line3buf), "or http://%s.local/", hostname.c_str());
@@ -508,13 +523,5 @@ void enableHotspot() {
     Serial.printf("[WEB] Hotspot \"%s\" up, connect and browse to http://%u.%u.%u.%u/\n",
                   apSsid.c_str(), apIp[0], apIp[1], apIp[2], apIp[3]);
 
-    startMissionWebServer();
-}
 
-bool isMissionLoaded() {
-    return is_mission_loaded;
-}
-
-bool isWebServerStarted() {
-    return web_server_started;
 }
