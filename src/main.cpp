@@ -50,9 +50,9 @@ void setup() {
     delay(100);
   }
 
-  displayOLED("READY", "Press BTN1", "to start test", "");
-  Serial.println("All peripherals initialized!");
-  Serial.println("Press BUTTON1 to start tests.");
+  // displayOLED("READY", "Press BTN1", "to start test", "");
+  // Serial.println("All peripherals initialized!");
+  // Serial.println("Press BUTTON1 to start tests.");
 }
 
 void loop() {
