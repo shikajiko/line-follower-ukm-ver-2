@@ -143,18 +143,18 @@ bool parseMissionJSON(const JsonDocument &doc)
         //-------------------------
         const char *condition = m["condition"] | "COND_IMMEDIATE";
 
-        if (!strcmp(condition, "COND_ENCODER1_GT"))
-            state.condition = COND_ENCODER1_GT;
-        else if (!strcmp(condition, "COND_ENCODER2_GT"))
-            state.condition = COND_ENCODER2_GT;
-        else if (!strcmp(condition, "COND_DIST_GT"))
-            state.condition = COND_DIST_GT;
-        else if (!strcmp(condition, "COND_SENSOR_MASK"))
-            state.condition = COND_SENSOR_MASK;
-        else if (!strcmp(condition, "COND_TIMER"))
-            state.condition = COND_TIMER;
+        if (!strcmp(condition, "ENCODER_KIRI"))
+            state.condition = ENCODER_KIRI;
+        else if (!strcmp(condition, "ENCODER_KANAN"))
+            state.condition = ENCODER_KANAN;
+        else if (!strcmp(condition, "JARAK"))
+            state.condition = JARAK;
+        else if (!strcmp(condition, "SENSOR_MASK"))
+            state.condition = SENSOR_MASK;
+        else if (!strcmp(condition, "TIMER"))
+            state.condition = TIMER;
         else
-            state.condition = COND_IMMEDIATE;
+            state.condition = SKIP;
 
         //-------------------------
         // Threshold

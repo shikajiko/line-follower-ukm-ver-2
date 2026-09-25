@@ -39,6 +39,7 @@ void runStateMachine() {
 
   if (!isCalibrationLoaded()) {
     loadCalibration();
+    loadEncoderCalibration();
   }
 
   if (!isMissionLoaded()) {
@@ -394,7 +395,7 @@ void runStateMachine() {
       if (current_val > 1000) current_val = 1000;   
     }
 
-    if (isButtonPressed(BTN_4)) {
+    if (isButtonPressed(BTN_4) || isButtonPressed(BTN_3)) {
       displayOLED("ENCODER", "CALIBRATION", "SET", "");
       saveEncoderCalibration(current_val);
       encoder_cal_menu_active = false;

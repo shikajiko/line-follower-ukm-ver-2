@@ -4,6 +4,7 @@
 #include "display.h"
 
 static float calibratedValue = DEFAULT_ENCODER_VALUE;
+static int32_t calibratedMm = DEFAULT_ENCODER_VALUE * 10;
 static Preferences encoder_preferences;
 static bool encoder_cal_loaded;
 
@@ -12,6 +13,7 @@ void loadEncoderCalibration() {
 
     encoder_preferences.begin("encoder", true);
     calibratedValue = encoder_preferences.getFloat("val", DEFAULT_ENCODER_VALUE);
+    calibratedMm = calibratedValue * 10;
     encoder_cal_loaded = true;
 }
 
@@ -41,4 +43,9 @@ void calibrateEncoder() {
     }
 
     brakeMotors();
+}
+
+int32_t convertEncoderToCm(int32_t encoderValue) {
+    loadEncoderCalibration();
+    return (encoderValue * calibratedMm) / 2500; 
 }

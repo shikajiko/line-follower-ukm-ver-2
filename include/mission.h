@@ -8,12 +8,12 @@
 enum LineMode { LINE_BLACK, LINE_WHITE };
 enum DriveMode { DIRECT_MOVE, PID_STRAIGHT, PID };
 enum ConditionType {
-    COND_ENCODER1_GT,
-    COND_ENCODER2_GT,
-    COND_DIST_GT,
-    COND_SENSOR_MASK,
-    COND_IMMEDIATE,
-    COND_TIMER
+    ENCODER_KIRI,
+    ENCODER_KANAN,
+    JARAK,
+    SENSOR_MASK,
+    SKIP,
+    TIMER
 };
 enum MaskMode { MASK_AND, MASK_OR };
 enum StopMode { NONE, STOP, BRAKE };

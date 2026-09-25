@@ -166,6 +166,8 @@
   .bit-toggle.on{background:var(--amber-dim); border-color:var(--amber); color:var(--amber);}
   .bit-toggle.on .n{color:var(--amber);}
   .bit-toggle:hover{border-color:var(--amber);}
+  .bit-toggle:disabled{opacity:.35; cursor:not-allowed;}
+  .bit-toggle:disabled:hover{border-color:var(--border);}
   .bit-readout{
     font-size:10.5px; color:var(--teal); background:#0f1216; border:1px solid var(--border);
     border-radius:3px; padding:6px 8px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:2px;
@@ -296,12 +298,12 @@
             <div class="field">
               <label for="f_condition">condition</label>
               <select id="f_condition">
-                <option value="COND_ENCODER1_GT">COND_ENCODER1_GT</option>
-                <option value="COND_ENCODER2_GT">COND_ENCODER2_GT</option>
-                <option value="COND_DIST_GT">COND_DIST_GT</option>
-                <option value="COND_SENSOR_MASK">COND_SENSOR_MASK</option>
-                <option value="COND_IMMEDIATE">COND_IMMEDIATE</option>
-                <option value="COND_TIMER">COND_TIMER</option>
+                <option value="ENCODER_KIRI">ENCODER_KIRI</option>
+                <option value="ENCODER_KANAN">ENCODER_KANAN</option>
+                <option value="JARAK">JARAK</option>
+                <option value="SENSOR_MASK">SENSOR_MASK</option>
+                <option value="SKIP">SKIP</option>
+                <option value="TIMER">TIMER</option>
               </select>
             </div>
             <div class="field" id="fld_threshold">
@@ -395,9 +397,9 @@
     <h3 data-section="drive">4. RIGHTSPEED</h3>
     <p>kecepatan motor kanan. nilai negatif berarti berputar ke belakang.</p>
     <h3 data-section="condition">5. CONDITION</h3>
-    <p>COND_ENCODER1_GT: misi selesai saat roda kiri berputar sebanyak threshold tertentu. COND_ENCODER2_GT: misi selesai saat roda kiri berputar sebanyak threshold tertentu. COND_DIST_GT: misi selesai saat kedua roda berputar sebanyak threshold. COND_SENSOR_MASK: misi selesai saat sensor mendeteksi garis sesuai dengan SENSOR MASK. SENSOR MASK tidak berpegaruh selain mode COND_SENSOR_MASK. COND_TIMER: misi selesai setelah waktu tertentu.</p>
+    <p>ENCODER_KIRI: misi selesai saat roda kiri berputar sebanyak threshold tertentu (cm). ENCODER_KANAN: misi selesai saat roda kanan berputar sebanyak threshold tertentu (cm). JARAK: misi selesai saat kedua roda berputar sebanyak threshold (cm). SENSOR_MASK: misi selesai saat sensor mendeteksi garis sesuai dengan SENSOR MASK. SENSOR MASK tidak berpegaruh selain mode SENSOR_MASK. SKIP: kondisi langsung terpenuhi, misi berpindah tanpa syarat. TIMER: misi selesai setelah waktu tertentu (detik).</p>
     <h3 data-section="condition">6. CONDITION_THRESHOLD</h3>
-    <p>nilai batasan sebelum misi dianggap selesai. jika COND_TIMER, maka nilai ini adalah waktu. jika COND_ENCODER ataupun COND_DIST_GT, nilai ini adalah jarak putaran roda. tidak berpengaruh ketika COND_SENSOR_MARK</p>
+    <p>nilai batasan sebelum misi dianggap selesai. jika TIMER, nilai ini adalah waktu (detik). jika ENCODER_KIRI, ENCODER_KANAN, ataupun JARAK, nilai ini adalah jarak putaran roda (cm). tidak berpengaruh ketika SENSOR_MASK atau SKIP</p>
     <h3 data-section="sensor">7. SENSORLEFT</h3>
     <p>syarat misi selesai untuk sensor kiri. 0 berarti tidak mendeteksi garis, 1 berarti mendeteksi garis. berlaku sebaliknya untuk mode LINE_WHITE</p>
     <h3 data-section="sensor">8. SENSORLEFT</h3>
@@ -492,7 +494,7 @@
   const ENUMS = {
     lineMode:   ['LINE_BLACK','LINE_WHITE'],
     driveMode:  ['DIRECT_MOVE','PID_STRAIGHT','PID'],
-    condition:  ['COND_ENCODER1_GT','COND_ENCODER2_GT','COND_DIST_GT','COND_SENSOR_MASK','COND_IMMEDIATE','COND_TIMER'],
+    condition:  ['ENCODER_KIRI','ENCODER_KANAN','JARAK','SENSOR_MASK','SKIP','TIMER'],
     maskMode:   ['MASK_AND','MASK_OR'],
     stopMode:   ['NONE','STOP','BRAKE'],
   };
@@ -522,12 +524,15 @@
 
   let bitsLeft = new Array(8).fill(0);
   let bitsRight = new Array(8).fill(0);
-  
+
 function buildBitfield(container, bitsArr, onChange){
     container.innerHTML = '';
 
     const row = document.createElement('div');
     row.className = 'bitfield-row';
+
+    const condition = $('f_condition').value;
+    const enabled = condition === 'SENSOR_MASK';
 
     for(let i = 0; i < 8; i++){
         const arrIndex = 7 - i;      // reverse UI only
@@ -536,6 +541,7 @@ function buildBitfield(container, bitsArr, onChange){
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'bit-toggle';
+        btn.disabled = !enabled;
 
         btn.innerHTML = `${bitsArr[arrIndex]}<span class="n">${bitPos}</span>`;
 
@@ -625,7 +631,7 @@ function buildBitfield(container, bitsArr, onChange){
     els.form.reset();
     writeForm({
       label:'', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
-      leftSpeed:0, rightSpeed:0, condition:'COND_IMMEDIATE', condition_threshold:0,
+      leftSpeed:0, rightSpeed:0, condition:'SKIP', condition_threshold:0,
       sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false
     });
   }
@@ -634,17 +640,32 @@ function buildBitfield(container, bitsArr, onChange){
     const driveMode = $('f_driveMode').value;
     const condition = $('f_condition').value;
 
-    // Sensor applicability
-    $('fs_sensor').classList.toggle('na', condition !== 'COND_SENSOR_MASK');
-    $('fld_threshold').style.opacity =
-        condition === 'COND_SENSOR_MASK' ? .4 : 1;
+    // ----- Sensor mask applicability -----
+    const sensorApplies = condition === 'SENSOR_MASK';
+    $('fs_sensor').classList.toggle('na', !sensorApplies);
+    els.bitsLeft.querySelectorAll('.bit-toggle').forEach(b => b.disabled = !sensorApplies);
+    els.bitsRight.querySelectorAll('.bit-toggle').forEach(b => b.disabled = !sensorApplies);
+    $('f_maskMode').disabled = !sensorApplies;
 
+    // ----- Threshold applicability + unit -----
+    const thresholdInput = $('f_threshold');
     const unit = $('thresholdUnit');
-    unit.textContent =
-        condition === 'COND_TIMER' ? 'ms' :
-        (condition === 'COND_ENCODER1_GT' ||
-        condition === 'COND_ENCODER2_GT' ||
-        condition === 'COND_DIST_GT') ? 'ticks' : 'int32';
+    const distanceConds = ['ENCODER_KIRI', 'ENCODER_KANAN', 'JARAK'];
+
+    if(distanceConds.includes(condition)){
+        unit.textContent = 'jarak (cm)';
+        thresholdInput.disabled = false;
+        $('fld_threshold').style.opacity = 1;
+    } else if(condition === 'TIMER'){
+        unit.textContent = 'waktu (detik)';
+        thresholdInput.disabled = false;
+        $('fld_threshold').style.opacity = 1;
+    } else {
+        // SENSOR_MASK, SKIP: threshold unused
+        unit.textContent = 'n/a';
+        thresholdInput.disabled = true;
+        $('fld_threshold').style.opacity = .4;
+    }
 
     // ----- Drive mode UI -----
     const leftLabel = document.querySelector('label[for="f_leftSpeed"]');
@@ -853,7 +874,7 @@ function buildBitfield(container, bitsArr, onChange){
   els.btnNew.addEventListener('click', () => {
     const blank = {
       id: uid(), label: 'Untitled mission', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
-      leftSpeed:0, rightSpeed:0, condition:'COND_IMMEDIATE', condition_threshold:0,
+      leftSpeed:0, rightSpeed:0, condition:'SKIP', condition_threshold:0,
       sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false
     };
     missions.push(blank);
@@ -1044,8 +1065,8 @@ els.btnLoad.addEventListener("click", async () => {
       lines.push(`        ${m.leftSpeed}, ${m.rightSpeed},`);
       lines.push(`        ConditionType::${m.condition},`);
       lines.push(`        ${m.condition_threshold},`);
-      lines.push(`        ${m.sensorRight}, // sensorRight = 0b${m.sensorRight.toString(2).padStart(8,'0')}`);
       lines.push(`        ${m.sensorLeft}, // sensorLeft  = 0b${m.sensorLeft.toString(2).padStart(8,'0')}`);
+      lines.push(`        ${m.sensorRight}, // sensorRight = 0b${m.sensorRight.toString(2).padStart(8,'0')}`);
       lines.push(`        MaskMode::${m.maskMode},`);
       lines.push(`        StopMode::${m.stopMode},`);
       lines.push(`        ${m.is_checkpoint ? 'true' : 'false'} // is_checkpoint`);

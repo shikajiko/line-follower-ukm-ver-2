@@ -2,6 +2,7 @@
 #include "line_sensor.h"
 #include "locomotion.h"
 #include "display.h"
+#include "encoder_calibrate.h"
 
 static int dist_encoder = 0;
 static int last_mission = -1;
@@ -44,13 +45,13 @@ static void displayMissionInfo(uint32_t index, uint32_t encoder_left, uint32_t e
     snprintf(line1_buf, sizeof(line1_buf), "RUNNING MISSION: %d", index);
 
     switch (mission.condition) {
-        case COND_DIST_GT: 
+        case JARAK: 
         snprintf(line2_buf, sizeof(line2_buf), "UNTIL DIST: %d", mission.condition_threshold); 
         break;
-        case COND_ENCODER1_GT:
+        case ENCODER_KIRI:
         snprintf(line2_buf, sizeof(line2_buf), "UNTIL L ENC: %d", mission.condition_threshold);
         break;
-        case COND_ENCODER2_GT:
+        case ENCODER_KANAN:
         snprintf(line2_buf, sizeof(line2_buf), "UNTIL R ENC: %d", mission.condition_threshold);
         break;
         default:
@@ -115,23 +116,31 @@ void runStateLogic(const MissionState &s, bool justEntered) {
 }
 
 bool checkStateObjective(const MissionState &s) {
+    Serial.printf("threshold: %d\n", s.condition_threshold);
+    Serial.printf("condition: %d\n", s.condition);
+    int32_t result = convertEncoderToCm(dist_encoder);
+    Serial.printf("current dist: %d\n", result);
+
     switch (s.condition) {
-        case COND_ENCODER1_GT: return readEncoder(1) > s.condition_threshold; 
-        case COND_ENCODER2_GT: return readEncoder(2) > s.condition_threshold;
-        case COND_DIST_GT: return dist_encoder > s.condition_threshold;
-        case COND_SENSOR_MASK: return MaskSensor(s.sensorLeft, s.sensorRight, s.maskMode);
-        case COND_TIMER: return (millis() - mission_timer) > s.condition_threshold;
-        case COND_IMMEDIATE: return true;
+        case ENCODER_KIRI: return convertEncoderToCm(readEncoder(1)) >= s.condition_threshold; 
+        case ENCODER_KANAN: return convertEncoderToCm(readEncoder(2)) >= s.condition_threshold;
+        case JARAK:{
+            Serial.printf("entered JARAK condition\n");
+            return convertEncoderToCm(dist_encoder) >= s.condition_threshold;
+        } 
+        case SENSOR_MASK: return MaskSensor(s.sensorLeft, s.sensorRight, s.maskMode);
+        case TIMER: return (millis() - mission_timer) >= s.condition_threshold;
+        case SKIP: return true;
     }
     return false;
 }
 
 MissionState missionStates[MAX_MISSIONS] = {
-    {LINE_BLACK, PID_STRAIGHT, 135, 140, COND_DIST_GT, 450, 0b11111100, 0b00111111, MASK_OR, STOP, true},
-    {LINE_BLACK, DIRECT_MOVE, -140, 140, COND_DIST_GT, 80, 0b00000000, 0b00011111, MASK_OR, STOP, false},
-    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 150, 0b11111100, 0b00111111, MASK_OR, NONE, false},
-    {LINE_BLACK, PID_STRAIGHT, 100, 100, COND_SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE, false},
-    {LINE_BLACK, PID, 100, 100, COND_DIST_GT, 1000, 0b11111100, 0b00111111, MASK_OR, NONE, false},
+    {LINE_BLACK, PID_STRAIGHT, 135, 140, JARAK, 450, 0b11111100, 0b00111111, MASK_OR, STOP, true},
+    {LINE_BLACK, DIRECT_MOVE, -140, 140, JARAK, 80, 0b00000000, 0b00011111, MASK_OR, STOP, false},
+    {LINE_BLACK, PID, 100, 100, JARAK, 150, 0b11111100, 0b00111111, MASK_OR, NONE, false},
+    {LINE_BLACK, PID_STRAIGHT, 100, 100, SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE, false},
+    {LINE_BLACK, PID, 100, 100, JARAK, 1000, 0b11111100, 0b00111111, MASK_OR, NONE, false},
 };
 
 int NUM_STATES = 5;
