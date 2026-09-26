@@ -39,6 +39,7 @@ void resetMissionState();
 void resetFromLastCheckpoint();
 void setCurrentMission(int n);
 void runMission();
+void resetCheckpoint();
 void updateStartIndex(int n);
 
 #endif
