@@ -48,7 +48,7 @@ static uint8_t line_sensor_cal_hist_count[16] = {0};
 #define LINE_SENSOR_DEBOUNCE_N 1
 
 #define LINE_SENSOR_MIN_VALID_RANGE 5
-#define LINE_SENSOR_SCAN_PERIOD_MS 1
+#define LINE_SENSOR_SCAN_PERIOD_MS 2
 
 static uint16_t clampMargin(uint16_t margin) {
   if (margin > LINE_SENSOR_HYSTERESIS_MAX_COUNTS) {

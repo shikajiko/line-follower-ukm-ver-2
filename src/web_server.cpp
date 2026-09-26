@@ -431,7 +431,11 @@ static bool connectStationMode()
         WiFi.begin(ssid.c_str(), pass.c_str());
 
     unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_STA_CONNECT_TIMEOUT_MS)
+    wl_status_t status;
+    while ((status = WiFi.status()) != WL_CONNECTED &&
+           status != WL_NO_SSID_AVAIL &&
+           status != WL_CONNECT_FAILED &&
+           millis() - start < WIFI_STA_CONNECT_TIMEOUT_MS)
     {
         delay(250);
     }
@@ -443,7 +447,10 @@ static bool connectStationMode()
         return true;
     }
 
-    Serial.println("[WEB] Station connect timed out, staying on hotspot only");
+    Serial.printf("[WEB] Station connect failed (status=%d), staying on hotspot only\n", WiFi.status());
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(true, true);
+
     return false;
 }
 
@@ -490,9 +497,11 @@ void printHotspotInformation() {
         staIp = WiFi.localIP();
         snprintf(line1buf, sizeof(line1buf), "WiFi \"%s\"", wifiGetStaSsid().c_str());
         snprintf(line2buf, sizeof(line2buf), "http://%u.%u.%u.%u/", staIp[0], staIp[1], staIp[2], staIp[3]);
+        line3buf[0] = '\0';
+        line4buf[0] = '\0';
 
         Serial.printf("[WEB] Also reachable via hotspot \"%s\" at http://%u.%u.%u.%u/\n",
-                      apSsid.c_str(), apIp[0], apIp[1], apIp[2], apIp[3]);
+                    apSsid.c_str(), apIp[0], apIp[1], apIp[2], apIp[3]);
     }
     else
     {
