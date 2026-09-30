@@ -46,7 +46,7 @@
     font-family:var(--mono); font-size:11px; letter-spacing:.04em; text-transform:uppercase;
     background:var(--panel-2); color:var(--text); border:1px solid var(--border);
     padding:8px 12px; border-radius:3px; cursor:pointer;
-    transition:border-color .15s, color .15s, background .15s;
+    transition:border-color .15s, color .15s, background .15s, box-shadow .15s, transform .08s;
   }
   button:hover{border-color:var(--amber); color:var(--amber);}
   button:focus-visible{outline:2px solid var(--amber); outline-offset:1px;}
@@ -57,6 +57,43 @@
   button:disabled{opacity:.35; cursor:not-allowed;}
   button:disabled:hover{border-color:var(--border); color:var(--text);}
   button.tiny{padding:4px 7px; font-size:10px;}
+
+  /* ---- Mirror buttons (red) ---- */
+  .start-from button.mirror{
+    width:100%;
+    background:transparent;
+    color:var(--red);
+    border-color:var(--red);
+    font-weight:600;
+  }
+  .start-from button.mirror:hover{
+    background:var(--red);
+    color:#1a0a09;
+    border-color:var(--red);
+    box-shadow:0 0 10px rgba(232,104,95,.45);
+  }
+  .start-from button.mirror:active{
+    transform:scale(.97);
+    background:#c9544c;
+    border-color:#c9544c;
+  }
+  .seq-controls button.mirror-one{
+    color:var(--red);
+    border-color:#5a3230;
+    background:transparent;
+    font-weight:600;
+  }
+  .seq-controls button.mirror-one:hover{
+    background:var(--red);
+    color:#1a0a09;
+    border-color:var(--red);
+    box-shadow:0 0 8px rgba(232,104,95,.45);
+  }
+  .seq-controls button.mirror-one:active{
+    transform:scale(.95);
+    background:#c9544c;
+    border-color:#c9544c;
+  }
 
   main{
     display:grid; grid-template-columns:340px 1fr; gap:1px;
@@ -99,6 +136,7 @@
   .seq-item.active .idx{border-color:var(--amber); color:var(--amber); background:var(--amber-dim);}
   .seq-item:hover:not(.active){border-color:var(--border); background:var(--panel-2);}
   .seq-item .label{font-weight:600; font-size:12.5px; color:var(--text);}
+  .seq-item:hover .label, .seq-item.active .label{padding-right:110px;}
   .seq-item .meta{margin-top:4px; display:flex; gap:6px; flex-wrap:wrap;}
   .badge{
     font-size:9.5px; padding:2px 6px; border-radius:2px; background:var(--panel-2);
@@ -218,6 +256,8 @@
     opacity:0; transform:translateY(8px); transition:opacity .2s, transform .2s; pointer-events:none;
   }
   #toast.show{opacity:1; transform:translateY(0);}
+  /* red toast variant (used by mirror actions) */
+  #toast.red{border-color:var(--red); color:var(--red);}
 </style>
 </head>
 <body>
@@ -246,6 +286,9 @@
     <div class="start-from">
       <label for="f_startFrom">Mulai dari misi:</label>
       <input type="number" id="f_startFrom" value="1" min="1" step="1">
+    </div>
+    <div class="start-from">
+      <button type="button" id="btnMirrorAll" class="mirror">MIRROR SEMUA MISI</button>
     </div>
     <p class="panel-title">Urutan misi <span class="count" id="missionCount">0</span></p>
     <ul class="seq" id="seqList"></ul>
@@ -406,7 +449,7 @@
     <p>nilai batasan sebelum misi dianggap selesai. jika TIMER, nilai ini adalah waktu (detik). jika ENCODER_KIRI, ENCODER_KANAN, ataupun JARAK, nilai ini adalah jarak putaran roda (cm). tidak berpengaruh ketika SENSOR_MASK atau SKIP</p>
     <h3 data-section="sensor">7. SENSORLEFT</h3>
     <p>syarat misi selesai untuk sensor kiri. 0 berarti tidak mendeteksi garis, 1 berarti mendeteksi garis. berlaku sebaliknya untuk mode LINE_WHITE</p>
-    <h3 data-section="sensor">8. SENSORLEFT</h3>
+    <h3 data-section="sensor">8. SENSORRIGHT</h3>
     <p>syarat misi selesai untuk sensor kanan. 0 berarti tidak mendeteksi garis, 1 berarti mendeteksi garis. berlaku sebaliknya untuk mode LINE_WHITE</p>
     <h3 data-section="sensor">9. MASK_MODE</h3>
     <p>MASK_AND: kondisi sensor harus sama persis dengan kedua sensor mask sebelum misi dianggap selesai. MASK_OR: misi selesai apabila salah satu sensor sesuai kondisi SENSOR MASK</p>
@@ -508,7 +551,7 @@
     formTitle: $('formTitle'), form: $('missionForm'),
     btnSaveMission: $('btnSaveMission'), btnDuplicate: $('btnDuplicate'), btnDelete: $('btnDelete'),
     btnClear: $('btnClear'), btnNew: $('btnNew'), btnLoad: $('btnLoad'), btnSave: $('btnSave'),
-    btnImportJson: $('btnImportJson'),
+    btnImportJson: $('btnImportJson'), btnMirrorAll: $('btnMirrorAll'),
     btnExportCpp: $('btnExportCpp'), btnExportJson: $('btnExportJson'), fileInput: $('fileInput'),
     exportDialog: $('exportDialog'), exportText: $('exportText'), exportFormat: $('exportFormat'),
     btnCloseDialog: $('btnCloseDialog'), btnCopyExport: $('btnCopyExport'), btnDownloadExport: $('btnDownloadExport'),
@@ -525,7 +568,7 @@
   let bitsLeft = new Array(8).fill(0);
   let bitsRight = new Array(8).fill(0);
 
-function buildBitfield(container, bitsArr, onChange){
+  function buildBitfield(container, bitsArr, onChange){
     container.innerHTML = '';
 
     const row = document.createElement('div');
@@ -535,27 +578,27 @@ function buildBitfield(container, bitsArr, onChange){
     const enabled = condition === 'SENSOR_MASK';
 
     for(let i = 0; i < 8; i++){
-        const arrIndex = 7 - i;      // reverse UI only
-        const bitPos = arrIndex;
+      const arrIndex = 7 - i;      // reverse UI only
+      const bitPos = arrIndex;
 
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'bit-toggle';
-        btn.disabled = !enabled;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bit-toggle';
+      btn.disabled = !enabled;
 
+      btn.innerHTML = `${bitsArr[arrIndex]}<span class="n">${bitPos}</span>`;
+
+      btn.addEventListener('click', () => {
+        bitsArr[arrIndex] ^= 1;
+        btn.classList.toggle('on', !!bitsArr[arrIndex]);
         btn.innerHTML = `${bitsArr[arrIndex]}<span class="n">${bitPos}</span>`;
+        onChange();
+      });
 
-        btn.addEventListener('click', () => {
-            bitsArr[arrIndex] ^= 1;
-            btn.classList.toggle('on', !!bitsArr[arrIndex]);
-            btn.innerHTML = `${bitsArr[arrIndex]}<span class="n">${bitPos}</span>`;
-            onChange();
-        });
+      if(bitsArr[arrIndex])
+        btn.classList.add('on');
 
-        if(bitsArr[arrIndex])
-            btn.classList.add('on');
-
-        row.appendChild(btn);
+      row.appendChild(btn);
     }
 
     container.appendChild(row);
@@ -565,7 +608,8 @@ function buildBitfield(container, bitsArr, onChange){
     container.appendChild(readout);
 
     updateReadout(container, bitsArr);
-}
+  }
+
   function updateReadout(container, bitsArr){
     const readout = container.querySelector('.bit-readout');
     const val = bitsToByte(bitsArr);
@@ -638,7 +682,7 @@ function buildBitfield(container, bitsArr, onChange){
     });
   }
 
-   function updateApplicability(){
+  function updateApplicability(){
     const driveMode = $('f_driveMode').value;
     const condition = $('f_condition').value;
 
@@ -654,18 +698,18 @@ function buildBitfield(container, bitsArr, onChange){
     const distanceConds = ['ENCODER_KIRI', 'ENCODER_KANAN', 'JARAK'];
 
     if(distanceConds.includes(condition)){
-        unit.textContent = 'jarak (cm)';
-        thresholdInput.disabled = false;
-        $('fld_threshold').style.opacity = 1;
+      unit.textContent = 'jarak (cm)';
+      thresholdInput.disabled = false;
+      $('fld_threshold').style.opacity = 1;
     } else if(condition === 'TIMER'){
-        unit.textContent = 'waktu (detik)';
-        thresholdInput.disabled = false;
-        $('fld_threshold').style.opacity = 1;
+      unit.textContent = 'waktu (detik)';
+      thresholdInput.disabled = false;
+      $('fld_threshold').style.opacity = 1;
     } else {
-        // SENSOR_MASK, SKIP: threshold unused
-        unit.textContent = 'n/a';
-        thresholdInput.disabled = true;
-        $('fld_threshold').style.opacity = .4;
+      // SENSOR_MASK, SKIP: threshold unused
+      unit.textContent = 'n/a';
+      thresholdInput.disabled = true;
+      $('fld_threshold').style.opacity = .4;
     }
 
     // ----- Drive mode UI -----
@@ -674,15 +718,15 @@ function buildBitfield(container, bitsArr, onChange){
     const rightField = $('fld_rightSpeed');
 
     if (driveMode === 'PID' || driveMode === 'PID_STRAIGHT') {
-        leftLabel.textContent = 'baseSpeed';
-        rightInput.disabled = true;
-        rightField.style.opacity = '0.4';
+      leftLabel.textContent = 'baseSpeed';
+      rightInput.disabled = true;
+      rightField.style.opacity = '0.4';
     } else {
-        leftLabel.textContent = 'leftSpeed';
-        rightInput.disabled = false;
-        rightField.style.opacity = '1';
+      leftLabel.textContent = 'leftSpeed';
+      rightInput.disabled = false;
+      rightField.style.opacity = '1';
     }
-    }
+  }
 
   function updatePolarityHints(){
     const white = $('f_lineMode').value === 'LINE_WHITE';
@@ -713,7 +757,7 @@ function buildBitfield(container, bitsArr, onChange){
       const data = await res.json();
 
       els.wifiApPreview.textContent = data.ap_ssid || '-';
-      els.wifiHostnamePreview.textContent = (data.hostname || 'robot') + '.local';
+      if(els.wifiHostnamePreview) els.wifiHostnamePreview.textContent = (data.hostname || 'robot') + '.local';
       $('w_apPrefix').value = data.ap_ssid_prefix || '';
       $('w_staSsid').value = data.sta_ssid || '';
 
@@ -825,10 +869,12 @@ function buildBitfield(container, bitsArr, onChange){
           ${checkpointBadge}
         </div>
         <div class="seq-controls">
+          <button type="button" class="tiny mirror-one" data-act="mirror" title="Duplicate as mirrored mission">Mirror</button>
           <button type="button" class="tiny" data-act="up" title="Move up">↑</button>
           <button type="button" class="tiny" data-act="down" title="Move down">↓</button>
         </div>`;
       li.addEventListener('click', (e) => { if(!e.target.closest('[data-act]')) selectMission(m.id); });
+      li.querySelector('[data-act="mirror"]').addEventListener('click', e => { e.stopPropagation(); mirrorDuplicate(m.id); });
       li.querySelector('[data-act="up"]').addEventListener('click', e => { e.stopPropagation(); moveMission(i,-1); });
       li.querySelector('[data-act="down"]').addEventListener('click', e => { e.stopPropagation(); moveMission(i,1); });
       els.seqList.appendChild(li);
@@ -847,12 +893,70 @@ function buildBitfield(container, bitsArr, onChange){
     render();
   }
 
-  function showToast(msg){
+  function showToast(msg, variant){
     els.toast.textContent = msg;
+    els.toast.classList.toggle('red', variant === 'red');
     els.toast.classList.add('show');
     clearTimeout(showToast._t);
     showToast._t = setTimeout(() => els.toast.classList.remove('show'), 1800);
   }
+
+  // ---- Mirroring ----
+  // Returns a mirrored copy of a mission's fields (left <-> right).
+  function mirrorFields(m){
+    const rev8 = b => {
+      let r = 0;
+      for (let i = 0; i < 8; i++) if (b & (1 << i)) r |= 1 << (7 - i);
+      return r;
+    };
+    const c = { ...m };
+
+    // Motor speeds only swap for direct control. In PID modes, leftSpeed
+    // is the baseSpeed and rightSpeed is unused, so swapping would break it.
+    if(m.driveMode === 'DIRECT_MOVE'){
+      c.leftSpeed = m.rightSpeed;
+      c.rightSpeed = m.leftSpeed;
+    }
+
+    // Sensor masks swap sides
+    c.sensorLeft = rev8(m.sensorRight) & 0xFF;
+    c.sensorRight = rev8(m.sensorLeft)  & 0xFF;
+
+    // Encoder side swaps
+    if(m.condition === 'ENCODER_KIRI') c.condition = 'ENCODER_KANAN';
+    else if(m.condition === 'ENCODER_KANAN') c.condition = 'ENCODER_KIRI';
+
+    return c;
+  }
+
+  // Mirror one mission into a NEW mission named "<name> - mirror",
+  // inserted right after the original.
+  function mirrorDuplicate(id){
+    const src = missions.find(x => x.id === id);
+    if(!src) return;
+    const idx = missions.indexOf(src);
+    const copy = { ...mirrorFields(src), id: uid(), label: src.label + ' - mirror' };
+    missions.splice(idx + 1, 0, copy);
+    selectMission(copy.id);
+    showToast(`"${copy.label}" berhasil dibuat`, 'red');
+  }
+
+  // Mirror every mission in place.
+  els.btnMirrorAll.addEventListener('click', () => {
+    if(!missions.length){
+      showToast('Belum ada misi untuk di-mirror', 'red');
+      return;
+    }
+
+    missions.forEach(m => Object.assign(m, mirrorFields(m)));
+
+    // Refresh form if a mission is currently open
+    const sel = missions.find(x => x.id === selectedId);
+    if(sel) writeForm(sel);
+
+    render();
+    showToast(`${missions.length} misi berhasil di-mirror`, 'red');
+  });
 
   els.form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -965,34 +1069,33 @@ function buildBitfield(container, bitsArr, onChange){
     if(!response.ok) throw new Error(await response.text());
   }
 
-  // ---- Load/save use JSON files on disk (no robot connection needed) ----
-// ---- Upload missions directly to the robot ----
-els.btnSave.addEventListener('click', async () => {
+  // ---- Upload missions directly to the robot ----
+  els.btnSave.addEventListener('click', async () => {
     const payload = buildMissionPayload();
 
     try {
-        await pushToRobot(payload);
-        showToast(`Uploaded ${missions.length} mission(s) to robot`);
+      await pushToRobot(payload);
+      showToast(`Uploaded ${missions.length} mission(s) to robot`);
     }
     catch (err) {
-        console.error(err);
-        alert("Upload failed:\n" + err.message);
+      console.error(err);
+      alert("Upload failed:\n" + err.message);
     }
-});
+  });
 
-els.btnLoad.addEventListener("click", async () => {
+  els.btnLoad.addEventListener("click", async () => {
     try {
-        const response = await fetch("/load");
-        if (!response.ok)
-            throw new Error(await response.text());
+      const response = await fetch("/load");
+      if (!response.ok)
+        throw new Error(await response.text());
 
-        const data = await response.json();
-        applyLoadedPayload(data, 'robot');
+      const data = await response.json();
+      applyLoadedPayload(data, 'robot');
     }
     catch (err) {
-        alert("Load failed:\n" + err.message);
+      alert("Load failed:\n" + err.message);
     }
-});
+  });
 
   els.btnExportJson.addEventListener('click', () => {
     const json = JSON.stringify(buildMissionPayload(), null, 2);
@@ -1033,13 +1136,13 @@ els.btnLoad.addEventListener("click", async () => {
     reader.readAsText(file);
   });
 
-
+  // Export dialog (only active if a #btnExportCpp button exists and buildExport is defined)
   els.btnExportCpp && els.btnExportCpp.addEventListener('click', () => {
     els.exportText.value = buildExport(els.exportFormat.value);
     els.exportDialog.showModal();
   });
   els.exportFormat.addEventListener('change', () => {
-    els.exportText.value = buildExport(els.exportFormat.value);
+    if(typeof buildExport === 'function') els.exportText.value = buildExport(els.exportFormat.value);
   });
   els.btnCloseDialog.addEventListener('click', () => els.exportDialog.close());
   els.btnCopyExport.addEventListener('click', async () => {

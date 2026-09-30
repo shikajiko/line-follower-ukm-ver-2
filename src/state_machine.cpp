@@ -42,7 +42,7 @@ void runStateMachine() {
     loadEncoderCalibration();
   }
 
-  if (!isMissionInitialized) {
+  if (!isMissionInitialized()) {
     initialMission();
   }
   

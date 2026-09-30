@@ -11,10 +11,11 @@ static int last_mission = -1;
 static int start_index = 0;
 static bool is_initialized = false;
 static bool is_buzzer_ringing = false;
-static uint32_t mission_timer = 0;
+static uint32_t mission_start_time = 0;
+static uint32_t mission_elapsed_time = 0;
 static uint32_t current_mission = 0;
 static uint32_t last_checkpoint = 0;
-
+int NUM_STATES = 0;
 std::vector<MissionState> missionStates;
 
 bool isMissionInitialized() {
@@ -29,7 +30,7 @@ void initialMission() {
 void resetMissionState() {
     last_mission = -1;
     current_mission = start_index;
-    mission_timer = 0;
+    mission_elapsed_time = 0;
     dist_encoder = 0;
     resetEncoder(1);
     resetEncoder(2);
@@ -42,7 +43,7 @@ void resetCheckpoint() {
 void resetFromLastCheckpoint() {
     current_mission = last_checkpoint;
     last_mission = last_checkpoint;
-    mission_timer = 0;
+    mission_elapsed_time = 0;
     dist_encoder = 0;
     resetEncoder(1);
     resetEncoder(2);
@@ -109,19 +110,21 @@ uint8_t MaskSensor(uint8_t maskLeft, uint8_t maskRight, MaskMode mode) {
 
 void runStateLogic(const MissionState &s, bool justEntered) {
     if (s.is_checkpoint) {
-        Serial.printf("this is checkpoint: %d\n", current_mission);
         last_checkpoint = current_mission;
     }
     
     if (justEntered) {
-        mission_timer = millis();
+        mission_start_time = millis();
         if (s.buzzer_on && !is_buzzer_ringing) {
             is_buzzer_ringing = true;
             digitalWrite(BUZZER_PIN, HIGH);
+            Serial.printf("we should ring buzzer\n");
         }
     }
 
-    if (is_buzzer_ringing && mission_timer >= BUZZER_RINGING_MS) {
+    mission_elapsed_time = millis() - mission_start_time;
+    
+    if (is_buzzer_ringing && mission_elapsed_time >= BUZZER_RINGING_MS) {
         digitalWrite(BUZZER_PIN, LOW);
         is_buzzer_ringing = false;
     }
@@ -144,20 +147,20 @@ void runStateLogic(const MissionState &s, bool justEntered) {
 }
 
 bool checkStateObjective(const MissionState &s) {
-    Serial.printf("threshold: %d\n", s.condition_threshold);
-    Serial.printf("condition: %d\n", s.condition);
+    // Serial.printf("threshold: %d\n", s.condition_threshold);
+    // Serial.printf("condition: %d\n", s.condition);
     int32_t result = convertEncoderToCm(dist_encoder);
-    Serial.printf("current dist: %d\n", result);
+    // Serial.printf("current dist: %d\n", result);
 
     switch (s.condition) {
         case ENCODER_KIRI: return convertEncoderToCm(readEncoder(1)) >= s.condition_threshold; 
         case ENCODER_KANAN: return convertEncoderToCm(readEncoder(2)) >= s.condition_threshold;
         case JARAK:{
-            Serial.printf("entered JARAK condition\n");
+            // Serial.printf("entered JARAK condition\n");
             return convertEncoderToCm(dist_encoder) >= s.condition_threshold;
         } 
         case SENSOR_MASK: return MaskSensor(s.sensorLeft, s.sensorRight, s.maskMode);
-        case TIMER: return (millis() - mission_timer)/1000 >= s.condition_threshold;
+        case TIMER: return (mission_elapsed_time)/1000 >= s.condition_threshold;
         case SKIP: return true;
     }
     return false;
@@ -179,7 +182,7 @@ void runMission() {
     }
 
     if (last_checkpoint != 0 && last_checkpoint < NUM_STATES && current_mission < last_checkpoint) current_mission = last_checkpoint;
-    Serial.printf("current mission is: %d\nlast_checkpoint: %d\n", current_mission, last_checkpoint);
+    // Serial.printf("current mission is: %d\nlast_checkpoint: %d\n", current_mission, last_checkpoint);
     bool justEntered = (current_mission != last_mission);
     last_mission = current_mission;
 
@@ -188,7 +191,10 @@ void runMission() {
     if (checkStateObjective(s) && !justEntered) {
         resetEncoder(1);
         resetEncoder(2);
-        mission_timer = 0;
+        mission_elapsed_time = 0;
+        
+        is_buzzer_ringing = false;
+        digitalWrite(BUZZER_PIN, LOW);
 
         last_mission = current_mission;
         current_mission++;

@@ -101,13 +101,15 @@ bool parseMissionJSON(const JsonDocument &doc)
     }
 
     NUM_STATES = 0;
+    std::vector<MissionState> parsed;
+    parsed.reserve(MAX_MISSIONS);
 
     for (JsonObjectConst m : missions)
     {
-        if (NUM_STATES >= MAX_MISSIONS)
+        if (parsed.size() >= MAX_MISSIONS)
             break;
 
-        MissionState &state = missionStates[NUM_STATES];
+        MissionState state = {};
 
         //-------------------------
         // Line mode
@@ -193,8 +195,11 @@ bool parseMissionJSON(const JsonDocument &doc)
         state.is_checkpoint = m["is_checkpoint"];
         state.buzzer_on = m["buzzer_on"];
         
-        NUM_STATES++;
+        parsed.push_back(state);
     }
+
+    missionStates.swap(parsed);
+    NUM_STATES = missionStates.size();
 
     setCurrentMission(start);
     updateStartIndex(start);
