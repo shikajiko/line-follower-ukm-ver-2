@@ -255,11 +255,11 @@
   </section>
 
   <section class="panel">
-    <p class="panel-title" id="formTitle">Select or create a mission</p>
+    <p class="panel-title" id="formTitle">Pilih atau buat misi baru</p>
     <form id="missionForm" autocomplete="off">
       <div class="field span2">
-        <label for="f_label">Label <span class="hint">(editor-only, not part of the struct)</span></label>
-        <input type="text" id="f_label" placeholder="e.g. Approach ramp">
+        <label for="f_label">Nama misi</label>
+        <input type="text" id="f_label" placeholder="cth: belok kanan">
       </div>
 
       <div class="form-grid" style="margin-top:18px;">
@@ -351,6 +351,10 @@
                 <input type="checkbox" id="f_isCheckpoint">
                 is_checkpoint
               </label>
+              <label for="f_buzzerOn">
+                <input type="checkbox" id="f_buzzerOn">
+                buzzer_on
+              </label>
             </div>
           </div>
         </fieldset>
@@ -410,6 +414,8 @@
     <p>kondisi robot setelah menyelesaikan misi. NONE berarti robot langsung masuk ke misi selanjutnya. STOP berarti robot akan berusaha berhenti. BRAKE berarti robot mengerem untuk pemberhentian yang lebih akurat.</p>
     <h3 data-section="stop">11. IS_CHECKPOINT</h3>
     <p>menandai apakah misi ini adalah checkpoint. Digunakan misalnya untuk menyimpan progres atau titik referensi robot, tidak mempengaruhi cara robot menyelesaikan misi ini.</p>
+    <h3 data-section="stop">12. BUZZER_ON</h3>
+    <p>jika ON, buzzer robot akan berbunyi ketika memasuki misi.</p>
   </div>
 </dialog>
 
@@ -594,7 +600,7 @@ function buildBitfield(container, bitsArr, onChange){
 
   function readForm(){
     return {
-      label: $('f_label').value.trim() || 'Untitled mission',
+      label: $('f_label').value.trim() || 'Misi 1',
       driveMode: $('f_driveMode').value,
       lineMode: $('f_lineMode').value,
       leftSpeed: clampInt($('f_leftSpeed').value),
@@ -606,6 +612,7 @@ function buildBitfield(container, bitsArr, onChange){
       maskMode: $('f_maskMode').value,
       stopMode: $('f_stopMode').value,
       is_checkpoint: $('f_isCheckpoint').checked,
+      buzzer_on: $('f_buzzerOn').checked,
     };
   }
 
@@ -622,6 +629,7 @@ function buildBitfield(container, bitsArr, onChange){
     $('f_maskMode').value = m.maskMode;
     $('f_stopMode').value = m.stopMode;
     $('f_isCheckpoint').checked = !!m.is_checkpoint;
+    $('f_buzzerOn').checked = !!m.buzzer_on;
     refreshBitfields();
     updateApplicability();
     updatePolarityHints();
@@ -632,7 +640,7 @@ function buildBitfield(container, bitsArr, onChange){
     writeForm({
       label:'', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
       leftSpeed:0, rightSpeed:0, condition:'SKIP', condition_threshold:0,
-      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false
+      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false, buzzer_on:false
     });
   }
 
@@ -640,7 +648,6 @@ function buildBitfield(container, bitsArr, onChange){
     const driveMode = $('f_driveMode').value;
     const condition = $('f_condition').value;
 
-    // ----- Sensor mask applicability -----
     const sensorApplies = condition === 'SENSOR_MASK';
     $('fs_sensor').classList.toggle('na', !sensorApplies);
     els.bitsLeft.querySelectorAll('.bit-toggle').forEach(b => b.disabled = !sensorApplies);
@@ -813,7 +820,7 @@ function buildBitfield(container, bitsArr, onChange){
       const li = document.createElement('li');
       li.className = 'seq-item' + (m.id === selectedId ? ' active' : '');
       const stopBadge = m.stopMode !== 'NONE' ? `<span class="badge stop-${m.stopMode}">${m.stopMode}</span>` : '';
-      const checkpointBadge = m.is_checkpoint ? `<span class="badge checkpoint">CHECKPOINT</span>` : '';
+      const checkpointBadge = m.is_checkpoint ? `<span class="badge checkpoint">CHECKPOINT</span>` : ''; 
       li.innerHTML = `
         <span class="idx">${i+1}</span>
         <div class="label">${escapeHtml(m.label)}</div>
@@ -873,13 +880,13 @@ function buildBitfield(container, bitsArr, onChange){
 
   els.btnNew.addEventListener('click', () => {
     const blank = {
-      id: uid(), label: 'Untitled mission', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
+      id: uid(), label: 'Misi baru', driveMode:'DIRECT_MOVE', lineMode:'LINE_BLACK',
       leftSpeed:0, rightSpeed:0, condition:'SKIP', condition_threshold:0,
-      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false
+      sensorLeft:0, sensorRight:0, maskMode:'MASK_AND', stopMode:'NONE', is_checkpoint:false, buzzer_on:false
     };
     missions.push(blank);
     selectMission(blank.id);
-    showToast('Blank mission added');
+    showToast('Berhasil menambahkan misi');
   });
 
   els.btnClear.addEventListener('click', () => { resetForm(); deselect(); });
@@ -942,6 +949,7 @@ function buildBitfield(container, bitsArr, onChange){
         maskMode: m.maskMode,
         stopMode: m.stopMode,
         is_checkpoint: !!m.is_checkpoint,
+        buzzer_on: !!m.buzzer_on,
       };
     });
 
@@ -1016,18 +1024,18 @@ els.btnLoad.addEventListener("click", async () => {
         // Sync robot to the imported file.
         try{
           await pushToRobot(buildMissionPayload());
-          showToast(`Imported ${missions.length} mission(s) and synced to robot`);
+          showToast(`Berhasil menambahkan ${missions.length} misi`);
         }catch(uploadErr){
           console.error(uploadErr);
-          alert(`Imported ${missions.length} mission(s) into the editor, but syncing to the robot failed:\n${uploadErr.message}\n\nUse "Save mission" to retry the upload.`);
+          alert(`Gagal menambahkan misi. :\n${uploadErr.message}\n\nTekan "Save mission" untuk coba lagi.`);
         }
       }catch(err){
-        alert('Import failed: ' + err.message);
+        alert('Gagal melakukan import: ' + err.message);
       }finally{
         els.fileInput.value = '';
       }
     };
-    reader.onerror = () => alert('Import failed: could not read file');
+    reader.onerror = () => alert('Import gagal: tidak dapat membaca file');
     reader.readAsText(file);
   });
 
@@ -1049,38 +1057,6 @@ els.btnLoad.addEventListener("click", async () => {
     const filename = fmt === 'array' ? 'missions.h' : 'mission_backend.ino';
     triggerDownload(new Blob([els.exportText.value], {type:'text/plain'}), filename);
   });
-
-  function buildExport(fmt){
-    return fmt === 'array' ? buildCppArray() : buildEsp32Backend();
-  }
-
-  function buildCppArray(){
-    if(missions.length === 0) return '// No missions defined.\n';
-    const lines = ['#include "mission.h"', '', `// start_from = ${clampInt(els.f_startFrom.value) || 1}`, `MissionState missions[${missions.length}] = {`];
-    missions.forEach((m, i) => {
-      lines.push(`    // [${i}] ${m.label}`);
-      lines.push('    {');
-      lines.push(`        LineMode::${m.lineMode},`);
-      lines.push(`        DriveMode::${m.driveMode},`);
-      lines.push(`        ${m.leftSpeed}, ${m.rightSpeed},`);
-      lines.push(`        ConditionType::${m.condition},`);
-      lines.push(`        ${m.condition_threshold},`);
-      lines.push(`        ${m.sensorLeft}, // sensorLeft  = 0b${m.sensorLeft.toString(2).padStart(8,'0')}`);
-      lines.push(`        ${m.sensorRight}, // sensorRight = 0b${m.sensorRight.toString(2).padStart(8,'0')}`);
-      lines.push(`        MaskMode::${m.maskMode},`);
-      lines.push(`        StopMode::${m.stopMode},`);
-      lines.push(`        ${m.is_checkpoint ? 'true' : 'false'} // is_checkpoint`);
-      lines.push(`    }${i < missions.length-1 ? ',' : ''}`);
-    });
-    lines.push('};', '');
-    return lines.join('\n');
-  }
-
-  function buildEsp32Backend(){
-    return `// See web_server.cpp on the device for the live implementation.
-// This export is just a reference copy of the pack/unpack logic.
-`;
-  }
 
   refreshBitfields();
   resetForm();

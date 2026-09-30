@@ -3,14 +3,26 @@
 #include "locomotion.h"
 #include "display.h"
 #include "encoder_calibrate.h"
+#include <vector>
 
 static int dist_encoder = 0;
 static int last_mission = -1;
 static int start_index = 0;
+static bool is_initialized = false;
 static uint32_t mission_timer = 0;
 static uint32_t current_mission = 0;
 static uint32_t last_checkpoint = 0;
 
+std::vector<MissionState> missionStates;
+
+bool isMissionInitialized() {
+    return is_initialized;
+}
+
+void initialMission() {
+    is_initialized = true;
+    missionStates.reserve(MAX_MISSIONS);
+}
 
 void resetMissionState() {
     last_mission = -1;
@@ -135,17 +147,12 @@ bool checkStateObjective(const MissionState &s) {
     return false;
 }
 
-MissionState missionStates[MAX_MISSIONS] = {
-    {LINE_BLACK, PID_STRAIGHT, 135, 140, JARAK, 450, 0b11111100, 0b00111111, MASK_OR, STOP, true},
-    {LINE_BLACK, DIRECT_MOVE, -140, 140, JARAK, 80, 0b00000000, 0b00011111, MASK_OR, STOP, false},
-    {LINE_BLACK, PID, 100, 100, JARAK, 150, 0b11111100, 0b00111111, MASK_OR, NONE, false},
-    {LINE_BLACK, PID_STRAIGHT, 100, 100, SENSOR_MASK, 300, 0b11000000, 0b00000000, MASK_OR, NONE, false},
-    {LINE_BLACK, PID, 100, 100, JARAK, 1000, 0b11111100, 0b00111111, MASK_OR, NONE, false},
-};
-
-int NUM_STATES = 5;
-
 void runMission() {
+    if (missionStates.empty()) {
+        displayOLED("belum ada misi", "buat misi", "lewat menu", "update mission");
+        return;
+    }
+
     dist_encoder = (readEncoder(1) + readEncoder(2)) / 2;
 
     if (current_mission >= NUM_STATES) {

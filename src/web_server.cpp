@@ -10,6 +10,7 @@
 #include <LittleFS.h>
 #include <string.h>
 #include "display.h"
+#include <vector>
 #include <ArduinoJson.h>
 
 static WebServer webServer(80);
@@ -189,9 +190,10 @@ bool parseMissionJSON(const JsonDocument &doc)
         else
             state.stopMode = NONE;
 
-        NUM_STATES++;
-
         state.is_checkpoint = m["is_checkpoint"];
+        state.buzzer_on = m["buzzer_on"];
+        
+        NUM_STATES++;
     }
 
     setCurrentMission(start);

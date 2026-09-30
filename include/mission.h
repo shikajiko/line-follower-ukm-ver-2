@@ -2,6 +2,7 @@
 #define MISSION_H
 
 #include <stdint.h>
+#include <vector>
 
 #define MAX_MISSIONS 200
 
@@ -30,10 +31,14 @@ struct MissionState {
     MaskMode maskMode;
     StopMode stopMode;
     bool is_checkpoint;
+    bool buzzer_on;
 };
 
-extern MissionState missionStates[MAX_MISSIONS];
+extern std::vector<MissionState> missionStates;
 extern int NUM_STATES;
+
+bool isMissionInitialized();
+void initialMission();
 
 void resetMissionState();
 void resetFromLastCheckpoint();
