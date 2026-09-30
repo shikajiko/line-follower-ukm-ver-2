@@ -1,12 +1,51 @@
 #include "display.h"
 #include "stdint.h"
 #include "string.h"
+#include "function.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+// --- Battery icon config (adjust to your pack) ---
+#define BATT_EMPTY_V   11.0f   // voltage shown as 0%
+#define BATT_FULL_V    12.6f   // voltage shown as 100%
+#define BATT_ICON_W    16     // 14px body + 2px nub
+#define BATT_ICON_H    8
+
+static float getSmoothedBatteryVoltage() {
+  static float smoothed = -1.0f;
+  static uint32_t last_ms = 0;
+  uint32_t now = millis();
+
+  if (smoothed < 0.0f || (now - last_ms) >= 1000) {
+    float v = readBatteryVoltage();
+    smoothed = (smoothed < 0.0f) ? v : (smoothed * 0.7f + v * 0.3f);
+    last_ms = now;
+  }
+  return smoothed;
+}
+
+static void drawBatteryIcon(int16_t x, int16_t y) {
+  float v = getSmoothedBatteryVoltage();
+  float pct = (v - BATT_EMPTY_V) / (BATT_FULL_V - BATT_EMPTY_V);
+  if (pct < 0.0f) pct = 0.0f;
+  if (pct > 1.0f) pct = 1.0f;
+
+  uint8_t bars = (uint8_t)(pct * 4.0f + 0.5f);   // 0..4
+
+  // Blink the outline when empty
+  bool show_outline = (bars > 0) || ((millis() / 500) % 2 == 0);
+
+  if (show_outline) {
+    display.drawRect(x, y, 14, BATT_ICON_H, SSD1306_WHITE);      // body
+    display.fillRect(x + 14, y + 2, 2, 4, SSD1306_WHITE);        // nub
+  }
+  for (uint8_t i = 0; i < bars; i++) {
+    display.fillRect(x + 2 + i * 3, y + 2, 2, BATT_ICON_H - 4, SSD1306_WHITE);
+  }
+}
 // ---------------------------------------------------------------------------
 // Plain 4-line status screen (unchanged) — used by every non-menu state:
 // calibration, line debug, PID tuning, countdowns, errors, etc.
@@ -84,6 +123,7 @@ void displayMenuOLED(const char *title, const char *const *items,
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(2, 1);
   display.print(title);
+    drawBatteryIcon(SCREEN_WIDTH - BATT_ICON_W - 2, 2); 
   display.drawFastHLine(0, 11, SCREEN_WIDTH, SSD1306_WHITE);
 
   // --- Scroll window: keep the selection visible ----------------------
