@@ -5,6 +5,7 @@
 #include <vector>
 
 #define MAX_MISSIONS 200
+#define BUZZER_RINGING_MS 250
 
 enum LineMode { LINE_BLACK, LINE_WHITE };
 enum DriveMode { DIRECT_MOVE, PID_STRAIGHT, PID };

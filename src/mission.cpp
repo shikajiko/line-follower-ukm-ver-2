@@ -4,11 +4,13 @@
 #include "display.h"
 #include "encoder_calibrate.h"
 #include <vector>
+#include "IO.h"
 
 static int dist_encoder = 0;
 static int last_mission = -1;
 static int start_index = 0;
 static bool is_initialized = false;
+static bool is_buzzer_ringing = false;
 static uint32_t mission_timer = 0;
 static uint32_t current_mission = 0;
 static uint32_t last_checkpoint = 0;
@@ -113,6 +115,15 @@ void runStateLogic(const MissionState &s, bool justEntered) {
     
     if (justEntered) {
         mission_timer = millis();
+        if (s.buzzer_on && !is_buzzer_ringing) {
+            is_buzzer_ringing = true;
+            digitalWrite(BUZZER_PIN, HIGH);
+        }
+    }
+
+    if (is_buzzer_ringing && mission_timer >= BUZZER_RINGING_MS) {
+        digitalWrite(BUZZER_PIN, LOW);
+        is_buzzer_ringing = false;
     }
 
     bool is_inverted = false;
