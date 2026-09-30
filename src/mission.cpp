@@ -33,6 +33,10 @@ void resetMissionState() {
     resetEncoder(2);
 }
 
+void resetCheckpoint() {
+    last_checkpoint = 0;
+}
+
 void resetFromLastCheckpoint() {
     current_mission = last_checkpoint;
     last_mission = last_checkpoint;
@@ -103,6 +107,7 @@ uint8_t MaskSensor(uint8_t maskLeft, uint8_t maskRight, MaskMode mode) {
 
 void runStateLogic(const MissionState &s, bool justEntered) {
     if (s.is_checkpoint) {
+        Serial.printf("this is checkpoint: %d\n", current_mission);
         last_checkpoint = current_mission;
     }
     
@@ -141,13 +146,14 @@ bool checkStateObjective(const MissionState &s) {
             return convertEncoderToCm(dist_encoder) >= s.condition_threshold;
         } 
         case SENSOR_MASK: return MaskSensor(s.sensorLeft, s.sensorRight, s.maskMode);
-        case TIMER: return (millis() - mission_timer) >= s.condition_threshold;
+        case TIMER: return (millis() - mission_timer)/1000 >= s.condition_threshold;
         case SKIP: return true;
     }
     return false;
 }
 
 void runMission() {
+
     if (missionStates.empty()) {
         displayOLED("belum ada misi", "buat misi", "lewat menu", "update mission");
         return;
@@ -161,7 +167,8 @@ void runMission() {
         return;
     }
 
-
+    if (last_checkpoint != 0 && last_checkpoint < NUM_STATES && current_mission < last_checkpoint) current_mission = last_checkpoint;
+    Serial.printf("current mission is: %d\nlast_checkpoint: %d\n", current_mission, last_checkpoint);
     bool justEntered = (current_mission != last_mission);
     last_mission = current_mission;
 

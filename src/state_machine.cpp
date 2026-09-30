@@ -354,6 +354,7 @@ void runStateMachine() {
     break;
 
   case STATE_JUST_LOADED_MISSION:
+    resetCheckpoint();
     break;
 
   case STATE_CALIBRATE_ENCODER: {

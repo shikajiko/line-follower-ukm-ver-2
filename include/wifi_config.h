@@ -9,7 +9,7 @@
 
 // How long to wait for a station-mode connection before giving up and
 // falling back to AP-only.
-#define WIFI_STA_CONNECT_TIMEOUT_MS 10000
+#define WIFI_STA_CONNECT_TIMEOUT_MS 4000
 
 // Loads saved settings from NVS (Preferences). Safe to call multiple times;
 // only does real work once.
