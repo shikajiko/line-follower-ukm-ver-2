@@ -23,6 +23,7 @@ void saveEncoderCalibration(float new_val) {
     encoder_preferences.end();
 
     calibratedValue = new_val;
+    calibratedMm = new_val * 10;
 }
 
 float getCalibratedEncoderValue() {
@@ -46,7 +47,7 @@ void calibrateEncoder() {
 }
 
 int32_t convertEncoderToCm(int32_t encoderValue) {
-    loadEncoderCalibration();
+    // loadEncoderCalibration();
     // Serial.printf("encoder value: %d\n", encoderValue);
     // Serial.printf("distance traveled (cm): %d\n",  (encoderValue * calibratedMm) / 2500);
     return (encoderValue * calibratedMm) / 2500; 
